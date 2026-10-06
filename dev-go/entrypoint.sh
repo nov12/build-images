@@ -1,4 +1,3 @@
-```sh
 #!/bin/sh
 set -eu
 
@@ -10,7 +9,7 @@ USER_NAME="${USER_NAME:-apple}"
 PUID="${PUID:-1000}"
 PGID="${PGID:-1000}"
 
-TZ="${TZ:Asia/Singapore}"
+TZ="${TZ:-Asia/Singapore}"
 
 PASSWORD_ACCESS="${PASSWORD_ACCESS:-false}"
 USER_PASSWORD="${USER_PASSWORD:-}"
@@ -116,7 +115,7 @@ HOME_DIR="$(getent passwd "$USER_NAME" | cut -d: -f6)"
 # -----------------------------------------------------------------------------
 # 设置目录归属
 # -----------------------------------------------------------------------------
-chown "$PUID:$PGID" /go /pnpm
+chown "$PUID:$PGID" /go
 
 
 # -----------------------------------------------------------------------------
@@ -242,4 +241,3 @@ echo "[init] sudo: $SUDO_ACCESS"
 # -----------------------------------------------------------------------------
 
 exec "$@"
-```
