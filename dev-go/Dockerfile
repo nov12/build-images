@@ -29,10 +29,9 @@ ENV PIP_NO_CACHE_DIR=1
 
 ENV PATH="/usr/local/go/bin:/go/bin:/pnpm:${PATH}"
 
-# 安装开发和 SSH 所需系统包
+# 暂不安装 build-essential，需要 CGO 或编译原生依赖时再启用
 RUN apt-get update \
     && apt-get install -y --no-install-recommends \
-    build-essential \
     curl \
     git \
     libatomic1 \
@@ -44,6 +43,13 @@ RUN apt-get update \
 
 # 复制 Go 工具链
 COPY --from=go /usr/local/go /usr/local/go
+
+# 安装 Task
+RUN GOBIN=/usr/local/bin \
+    GOMODCACHE=/tmp/gomod \
+    GOCACHE=/tmp/gocache \
+    go install github.com/go-task/task/v3/cmd/task@latest \
+    && rm -rf /tmp/gomod /tmp/gocache
 
 # 复制 Node.js 和 npm
 COPY --from=node /usr/local/bin/node /usr/local/bin/node
