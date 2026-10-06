@@ -4,83 +4,81 @@ ARG PYTHON_VERSION=3.14.8
 ARG GO_VERSION=1.27.1
 ARG NODE_VERSION=24.21.0
 
-# Go 工具链来源
-FROM golang:${GO_VERSION}-trixie AS go
+# 准备 Go 工具链和 Task
+FROM golang:${GO_VERSION}-trixie AS go-tools
 
-# Node.js 工具链来源
-FROM node:${NODE_VERSION}-trixie-slim AS node
+RUN GOBIN=/out \
+    go install -ldflags="-s -w" github.com/go-task/task/v3/cmd/task@latest
 
-# 最终基础镜像
+# 删除 Go 开发中通常不需要的附加内容
+RUN rm -rf \
+    /usr/local/go/api \
+    /usr/local/go/doc \
+    /usr/local/go/misc \
+    /usr/local/go/test
+
+# Node.js 和 npm 来源
+FROM node:${NODE_VERSION}-trixie-slim AS node-tools
+
+# 最终镜像
 FROM python:${PYTHON_VERSION}-slim-trixie
-
-ARG PNPM_VERSION=12.9.1
 
 ENV DEBIAN_FRONTEND=noninteractive
 
 ENV GOPATH=/go
 ENV GOTOOLCHAIN=local
 
-ENV PNPM_HOME=/pnpm
-
 ENV PYTHONPATH=/pythonlib
 ENV PYTHONDONTWRITEBYTECODE=1
 ENV PIP_DISABLE_PIP_VERSION_CHECK=1
 ENV PIP_NO_CACHE_DIR=1
 
-ENV PATH="/usr/local/go/bin:/go/bin:/pnpm:${PATH}"
+ENV PATH="/usr/local/go/bin:/go/bin:${PATH}"
 
-# 暂不安装 build-essential，需要 CGO 或编译原生依赖时再启用
+# 安装开发和 SSH 所需系统包
 RUN apt-get update \
     && apt-get install -y --no-install-recommends \
-    curl \
-    git \
-    libatomic1 \
-    openssh-client \
-    openssh-server \
-    sudo \
-    unzip \
+        curl \
+        git \
+        libatomic1 \
+        openssh-server \
+        sudo \
     && rm -rf /var/lib/apt/lists/*
 
 # 复制 Go 工具链
-COPY --from=go /usr/local/go /usr/local/go
+COPY --from=go-tools /usr/local/go /usr/local/go
 
-# 安装 Task
-RUN GOBIN=/usr/local/bin \
-    GOMODCACHE=/tmp/gomod \
-    GOCACHE=/tmp/gocache \
-    go install github.com/go-task/task/v3/cmd/task@latest \
-    && rm -rf /tmp/gomod /tmp/gocache
+# 复制 Task
+COPY --from=go-tools /out/task /usr/local/bin/task
 
-# 复制 Node.js 和 npm
-COPY --from=node /usr/local/bin/node /usr/local/bin/node
-COPY --from=node /usr/local/lib/node_modules /usr/local/lib/node_modules
+# 复制 Node.js
+COPY --from=node-tools /usr/local/bin/node /usr/local/bin/node
+
+# 只复制 npm，不带其它 Node 全局工具
+COPY --from=node-tools /usr/local/lib/node_modules/npm /usr/local/lib/node_modules/npm
 
 RUN ln -sf ../lib/node_modules/npm/bin/npm-cli.js /usr/local/bin/npm \
     && ln -sf ../lib/node_modules/npm/bin/npx-cli.js /usr/local/bin/npx
 
-# 安装指定版本 pnpm
-RUN npm install --global "pnpm@${PNPM_VERSION}" \
-    && npm cache clean --force
-
-# 创建运行和开发目录
+# 创建开发和运行目录
 RUN mkdir -p \
     /workspace \
     /pythonlib \
     /go \
-    /pnpm \
     /config/ssh \
     /run/sshd
 
-# 安装容器初始化脚本
+# 安装初始化脚本
 COPY --chmod=755 entrypoint.sh /usr/local/bin/entrypoint
 
-# 构建时检查主要工具是否可用
+# 检查主要工具
 RUN python --version \
     && pip --version \
     && go version \
     && node --version \
     && npm --version \
-    && pnpm --version \
+    && npx --version \
+    && task --version \
     && git --version \
     && /usr/sbin/sshd -t
 

@@ -34,7 +34,6 @@ jobs:
             echo "python=${PYTHON_VERSION}"
             echo "go=${GO_VERSION}"
             echo "node=${NODE_VERSION}"
-            echo "pnpm=${PNPM_VERSION}"
           } >> "$GITHUB_OUTPUT"
 
       - name: Set image name
@@ -71,7 +70,6 @@ jobs:
             PYTHON_VERSION=${{ steps.versions.outputs.python }}
             GO_VERSION=${{ steps.versions.outputs.go }}
             NODE_VERSION=${{ steps.versions.outputs.node }}
-            PNPM_VERSION=${{ steps.versions.outputs.pnpm }}
 
           tags: |
             ${{ steps.image.outputs.name }}:latest
