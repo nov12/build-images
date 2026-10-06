@@ -10,13 +10,25 @@ on:
       - "dev-go/**"
       - ".github/workflows/dev-go.build.yml"
 
+concurrency:
+  group: dev-go-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  IMAGE: ghcr.io/nov12/dev-go
+
 permissions:
   contents: read
   packages: write
 
 jobs:
-  build:
-    runs-on: ubuntu-latest
+  prepare:
+    runs-on: ubuntu-26.04
+
+    outputs:
+      python: ${{ steps.versions.outputs.python }}
+      go: ${{ steps.versions.outputs.go }}
+      node: ${{ steps.versions.outputs.node }}
 
     steps:
       - name: Checkout
@@ -36,17 +48,18 @@ jobs:
             echo "node=${NODE_VERSION}"
           } >> "$GITHUB_OUTPUT"
 
-      - name: Set image name
-        id: image
-        shell: bash
-        run: |
-          OWNER="${GITHUB_REPOSITORY_OWNER,,}"
-          echo "name=ghcr.io/${OWNER}/dev-go" >> "$GITHUB_OUTPUT"
+  build-amd64:
+    needs: prepare
+    runs-on: ubuntu-26.04
 
-      - name: Set up QEMU
-        uses: docker/setup-qemu-action@v4
+    outputs:
+      digest: ${{ steps.build.outputs.digest }}
 
-      - name: Set up Docker Buildx
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+
+      - name: Set up Buildx
         uses: docker/setup-buildx-action@v4
 
       - name: Login to GHCR
@@ -56,24 +69,20 @@ jobs:
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
 
-      - name: Build and push
+      - name: Build amd64
+        id: build
         uses: docker/build-push-action@v7
         with:
           context: dev-go
-          push: true
-
-          platforms: |
-            linux/amd64
-            linux/arm64
+          platforms: linux/amd64
 
           build-args: |
-            PYTHON_VERSION=${{ steps.versions.outputs.python }}
-            GO_VERSION=${{ steps.versions.outputs.go }}
-            NODE_VERSION=${{ steps.versions.outputs.node }}
+            PYTHON_VERSION=${{ needs.prepare.outputs.python }}
+            GO_VERSION=${{ needs.prepare.outputs.go }}
+            NODE_VERSION=${{ needs.prepare.outputs.node }}
 
-          tags: |
-            ${{ steps.image.outputs.name }}:latest
-            ${{ steps.image.outputs.name }}:go-${{ steps.versions.outputs.go }}
+          outputs: |
+            type=image,name=${{ env.IMAGE }},push-by-digest=true,name-canonical=true,push=true
 
           labels: |
             org.opencontainers.image.source=https://github.com/${{ github.repository }}
@@ -81,5 +90,82 @@ jobs:
 
           provenance: false
 
-          cache-from: type=gha,scope=dev-go
-          cache-to: type=gha,mode=max,scope=dev-go
+  build-arm64:
+    needs: prepare
+    runs-on: ubuntu-26.04-arm
+
+    outputs:
+      digest: ${{ steps.build.outputs.digest }}
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+
+      - name: Set up Buildx
+        uses: docker/setup-buildx-action@v4
+
+      - name: Login to GHCR
+        uses: docker/login-action@v4
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Build arm64
+        id: build
+        uses: docker/build-push-action@v7
+        with:
+          context: dev-go
+          platforms: linux/arm64
+
+          build-args: |
+            PYTHON_VERSION=${{ needs.prepare.outputs.python }}
+            GO_VERSION=${{ needs.prepare.outputs.go }}
+            NODE_VERSION=${{ needs.prepare.outputs.node }}
+
+          outputs: |
+            type=image,name=${{ env.IMAGE }},push-by-digest=true,name-canonical=true,push=true
+
+          labels: |
+            org.opencontainers.image.source=https://github.com/${{ github.repository }}
+            org.opencontainers.image.revision=${{ github.sha }}
+
+          provenance: false
+
+  merge:
+    needs:
+      - prepare
+      - build-amd64
+      - build-arm64
+
+    runs-on: ubuntu-26.04
+
+    steps:
+      - name: Set up Buildx
+        uses: docker/setup-buildx-action@v4
+
+      - name: Login to GHCR
+        uses: docker/login-action@v4
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Create manifest
+        shell: bash
+        env:
+          AMD64_DIGEST: ${{ needs.build-amd64.outputs.digest }}
+          ARM64_DIGEST: ${{ needs.build-arm64.outputs.digest }}
+          GO_VERSION: ${{ needs.prepare.outputs.go }}
+        run: |
+          set -euo pipefail
+
+          docker buildx imagetools create \
+            --tag "${IMAGE}:latest" \
+            --tag "${IMAGE}:go-${GO_VERSION}" \
+            "${IMAGE}@${AMD64_DIGEST}" \
+            "${IMAGE}@${ARM64_DIGEST}"
+
+      - name: Inspect
+        run: |
+          docker buildx imagetools inspect "${IMAGE}:latest"
