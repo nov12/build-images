@@ -75,6 +75,7 @@ jobs:
 
           tags: |
             ${{ steps.image.outputs.name }}:latest
+            ${{ steps.image.outputs.name }}:go-${{ steps.versions.outputs.go }}
 
           labels: |
             org.opencontainers.image.source=https://github.com/${{ github.repository }}
