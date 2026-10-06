@@ -4,19 +4,13 @@ ARG PYTHON_VERSION=3.14.8
 ARG GO_VERSION=1.27.1
 ARG NODE_VERSION=24.21.0
 
-
-
-# Go
+# Go 工具链来源
 FROM golang:${GO_VERSION}-trixie AS go
 
-
-
-# Node.js
+# Node.js 工具链来源
 FROM node:${NODE_VERSION}-trixie-slim AS node
 
-
-
-# Final image
+# 最终基础镜像
 FROM python:${PYTHON_VERSION}-slim-trixie
 
 ARG PNPM_VERSION=12.9.1
@@ -35,64 +29,59 @@ ENV PIP_NO_CACHE_DIR=1
 
 ENV PATH="/usr/local/go/bin:/go/bin:/pnpm:${PATH}"
 
-
-
-# Basic development tools
+# 安装开发和 SSH 所需系统包
 RUN apt-get update \
     && apt-get install -y --no-install-recommends \
-        build-essential \
-        ca-certificates \
-        curl \
-        git \
-        libatomic1 \
-        openssh-client \
-        unzip \
-        xz-utils \
+    build-essential \
+    curl \
+    git \
+    libatomic1 \
+    openssh-client \
+    openssh-server \
+    sudo \
+    unzip \
     && rm -rf /var/lib/apt/lists/*
 
-
-
-# Go
-# 只从 golang 官方镜像复制 Go toolchain，
-# 不把整个 golang 镜像带进最终镜像。
-
+# 复制 Go 工具链
 COPY --from=go /usr/local/go /usr/local/go
 
-
-# Node.js + npm
-# 只从 node 官方 slim 镜像复制 Node 和 npm。
-
+# 复制 Node.js 和 npm
 COPY --from=node /usr/local/bin/node /usr/local/bin/node
 COPY --from=node /usr/local/lib/node_modules /usr/local/lib/node_modules
 
-RUN ln -s ../lib/node_modules/npm/bin/npm-cli.js /usr/local/bin/npm \
-    && ln -s ../lib/node_modules/npm/bin/npx-cli.js /usr/local/bin/npx
+RUN ln -sf ../lib/node_modules/npm/bin/npm-cli.js /usr/local/bin/npm \
+    && ln -sf ../lib/node_modules/npm/bin/npx-cli.js /usr/local/bin/npx
 
-
-
-# pnpm
+# 安装指定版本 pnpm
 RUN npm install --global "pnpm@${PNPM_VERSION}" \
     && npm cache clean --force
 
-
-# Workspace
+# 创建运行和开发目录
 RUN mkdir -p \
-        /workspace \
-        /pythonlib \
-        /go \
-        /pnpm
+    /workspace \
+    /pythonlib \
+    /go \
+    /pnpm \
+    /config/ssh \
+    /run/sshd
 
-WORKDIR /workspace
+# 安装容器初始化脚本
+COPY --chmod=755 entrypoint.sh /usr/local/bin/entrypoint
 
-
-# Build-time verification
+# 构建时检查主要工具是否可用
 RUN python --version \
     && pip --version \
     && go version \
     && node --version \
     && npm --version \
     && pnpm --version \
-    && git --version
+    && git --version \
+    && /usr/sbin/sshd -t
 
+WORKDIR /workspace
 
-CMD ["bash"]
+EXPOSE 22
+
+ENTRYPOINT ["/usr/local/bin/entrypoint"]
+
+CMD ["/usr/sbin/sshd", "-D", "-e"]
