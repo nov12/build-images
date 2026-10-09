@@ -1,0 +1,304 @@
+
+name: stratforge / build
+
+on:
+  # 手动触发。
+  workflow_dispatch:
+
+  # 只在 main 分支的镜像构建配置变化时触发。
+  push:
+    branches: [main]
+    paths:
+      - "stratforge/Dockerfile"
+      - "stratforge/pyproject.toml"
+      - ".github/workflows/stratforge.build.yml"
+
+concurrency:
+  group: stratforge-${{ github.ref }}
+  cancel-in-progress: true
+
+# 默认仅允许读取仓库。
+# 推送镜像的 Job 单独授予 packages: write。
+permissions:
+  contents: read
+
+env:
+  REGISTRY_PREFIX: ghcr.io/nov12/stratforge
+
+jobs:
+  # ==========================================================
+  # 依赖配置验证与构建哈希
+  # ==========================================================
+
+  validate:
+    runs-on: ubuntu-26.04
+
+    outputs:
+      build_hash: ${{ steps.hash.outputs.value }}
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+
+      # 验证 TOML 格式、依赖组及公共依赖引用。
+      - name: Validate dependency groups
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          python3 - <<'PY'
+          import tomllib
+          from pathlib import Path
+
+          path = Path("stratforge/pyproject.toml")
+          data = tomllib.loads(path.read_text(encoding="utf-8"))
+          groups = data.get("dependency-groups", {})
+
+          for group in ("engine-image", "live-image", "research-image"):
+              if not isinstance(groups.get(group), list) or not groups[group]:
+                  raise SystemExit(f"Missing or empty dependency group: {group}")
+
+          for group in ("live-image", "research-image"):
+              if {"include-group": "engine-image"} not in groups[group]:
+                  raise SystemExit(f"{group} must include engine-image")
+
+          print("Dependency groups validated")
+          PY
+
+      # Dockerfile 与 pyproject.toml 共同生成构建配置哈希。
+      # 不包含 Git commit 或 GitHub Actions 执行编号。
+      - name: Compute build hash
+        id: hash
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          hash="$(sha256sum \
+            stratforge/Dockerfile \
+            stratforge/pyproject.toml \
+            | sha256sum | cut -c1-16)"
+
+          echo "value=${hash}" >> "$GITHUB_OUTPUT"
+          echo "Build hash: ${hash}"
+
+  # ==========================================================
+  # 双镜像、双架构原生构建
+  # ==========================================================
+
+  build:
+    needs: validate
+
+    # 手动触发时，也只允许 main 分支发布生产镜像。
+    if: github.ref == 'refs/heads/main'
+
+    # 构建阶段需要向 GHCR 推送镜像。
+    permissions:
+      contents: read
+      packages: write
+
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - role: live
+            arch: amd64
+            runner: ubuntu-26.04
+
+          - role: live
+            arch: arm64
+            runner: ubuntu-26.04-arm
+
+          - role: research
+            arch: amd64
+            runner: ubuntu-26.04
+
+          - role: research
+            arch: arm64
+            runner: ubuntu-26.04-arm
+
+    runs-on: ${{ matrix.runner }}
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+
+      - name: Set up Buildx
+        uses: docker/setup-buildx-action@v4
+
+      - name: Login to GHCR
+        uses: docker/login-action@v4
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      # 按架构构建并通过 digest 推送。
+      # gzip level 9 优先缩小镜像传输体积。
+      - name: Build and push by digest
+        id: build
+        uses: docker/build-push-action@v7
+        with:
+          context: ./stratforge
+          file: ./stratforge/Dockerfile
+          target: ${{ matrix.role }}
+          platforms: linux/${{ matrix.arch }}
+
+          outputs: |
+            type=image,name=${{ env.REGISTRY_PREFIX }}-${{ matrix.role }},push-by-digest=true,name-canonical=true,push=true,compression=gzip,compression-level=9
+
+          labels: |
+            org.opencontainers.image.source=https://github.com/${{ github.repository }}
+            org.opencontainers.image.revision=${{ github.sha }}
+            org.opencontainers.image.version=build-${{ needs.validate.outputs.build_hash }}
+
+          provenance: false
+
+          cache-from: type=gha,scope=stratforge-${{ matrix.role }}-${{ matrix.arch }}
+          cache-to: type=gha,mode=max,scope=stratforge-${{ matrix.role }}-${{ matrix.arch }}
+
+      # ========================================================
+      # 打印最终镜像中的所有已安装组件及版本
+      # ========================================================
+
+      # 从实际运行镜像读取，不依赖构建阶段的 pip。
+      # 输出 Python、发行版、Python 包和 Debian 系统包版本。
+      # 不需要额外安装任何工具。
+      - name: Print installed versions
+        shell: bash
+        env:
+          IMAGE: ${{ env.REGISTRY_PREFIX }}-${{ matrix.role }}
+          DIGEST: ${{ steps.build.outputs.digest }}
+        run: |
+          set -euo pipefail
+
+          image_ref="${IMAGE}@${DIGEST}"
+          docker pull "${image_ref}"
+
+          echo "::group::OS and Python"
+          docker run --rm --entrypoint cat "${image_ref}" /etc/os-release
+          docker run --rm --entrypoint python "${image_ref}" -VV
+          echo "::endgroup::"
+
+          echo "::group::Python packages"
+          docker run --rm --entrypoint python "${image_ref}" -c \
+            'from importlib.metadata import distributions; print("\n".join(sorted("{}=={}".format(d.metadata["Name"], d.version) for d in distributions())))'
+          echo "::endgroup::"
+
+          echo "::group::Debian packages"
+          docker run --rm --entrypoint dpkg-query "${image_ref}" \
+            -W '-f=${binary:Package}\t${Version}\n' | sort
+          echo "::endgroup::"
+
+      # 在目标架构上验证运行用户和关键 Python 依赖。
+      # 平台源码不在镜像中，因此不启动业务 CLI。
+      - name: Smoke test
+        shell: bash
+        env:
+          IMAGE: ${{ env.REGISTRY_PREFIX }}-${{ matrix.role }}
+          DIGEST: ${{ steps.build.outputs.digest }}
+          ROLE: ${{ matrix.role }}
+        run: |
+          set -euo pipefail
+
+          image_ref="${IMAGE}@${DIGEST}"
+
+          test "$(docker run --rm --entrypoint id \
+            "${image_ref}" -u)" = "10001"
+
+          if [[ "${ROLE}" == "live" ]]; then
+            docker run --rm --entrypoint python "${image_ref}" \
+              -c 'import tomlkit, numpy, talib, redis, psycopg2, tqsdk; print("live OK")'
+          else
+            docker run --rm --entrypoint python "${image_ref}" \
+              -c 'import tomlkit, numpy, talib, fastapi, pydantic, uvicorn, jinja2, markdown, polars, tqsdk, psycopg2, optuna, scipy, cmaes; print("research OK")'
+          fi
+
+      # 把成功构建的镜像 digest 传给合并任务。
+      - name: Export digest
+        shell: bash
+        env:
+          DIGEST: ${{ steps.build.outputs.digest }}
+        run: |
+          set -euo pipefail
+
+          [[ "${DIGEST}" =~ ^sha256:[a-f0-9]{64}$ ]]
+
+          mkdir -p "${RUNNER_TEMP}/digests"
+          touch "${RUNNER_TEMP}/digests/${DIGEST#sha256:}"
+
+      - name: Upload digest
+        uses: actions/upload-artifact@v4
+        with:
+          name: digests-${{ matrix.role }}-${{ matrix.arch }}
+          path: ${{ runner.temp }}/digests/*
+          if-no-files-found: error
+          retention-days: 1
+
+  # ==========================================================
+  # 多架构 manifest 合并及版本发布
+  # ==========================================================
+
+  merge:
+    needs: [validate, build]
+    runs-on: ubuntu-26.04
+
+    # 合并 manifest 也需要 GHCR 写权限。
+    permissions:
+      contents: read
+      packages: write
+
+    strategy:
+      fail-fast: false
+      matrix:
+        role: [live, research]
+
+    steps:
+      - name: Set up Buildx
+        uses: docker/setup-buildx-action@v4
+
+      - name: Login to GHCR
+        uses: docker/login-action@v4
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Download digests
+        uses: actions/download-artifact@v4
+        with:
+          path: ${{ runner.temp }}/digests
+          pattern: digests-${{ matrix.role }}-*
+          merge-multiple: true
+
+      # 两种架构都完成构建和测试后，发布多架构镜像。
+      # 只生成 latest 和 build-<hash> 两种标签。
+      - name: Publish multi-platform image
+        shell: bash
+        env:
+          IMAGE: ${{ env.REGISTRY_PREFIX }}-${{ matrix.role }}
+          BUILD_HASH: ${{ needs.validate.outputs.build_hash }}
+        run: |
+          set -euo pipefail
+
+          cd "${RUNNER_TEMP}/digests"
+          shopt -s nullglob
+
+          digests=(*)
+          test "${#digests[@]}" -eq 2
+
+          refs=()
+          for digest in "${digests[@]}"; do
+            refs+=("${IMAGE}@sha256:${digest}")
+          done
+
+          docker buildx imagetools create \
+            --tag "${IMAGE}:build-${BUILD_HASH}" \
+            --tag "${IMAGE}:latest" \
+            "${refs[@]}"
+
+          docker buildx imagetools inspect \
+            "${IMAGE}:build-${BUILD_HASH}"
+
+          echo "Published:"
+          echo "  ${IMAGE}:build-${BUILD_HASH}"
+          echo "  ${IMAGE}:latest"
