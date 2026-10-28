@@ -1,0 +1,33 @@
+services:
+  t3code:
+    image: ghcr.io/nov12/t3code:latest
+    container_name: t3code
+    restart: unless-stopped
+
+    user: "${PUID:-1000}:${PGID:-1000}"
+
+    ports:
+      - "3773:3773"
+
+    environment:
+      # Available CLIs: codex,claude,opencode,gemini,qwen,kimi,copilot,pi,cline,amp
+      # all = install all; none or empty string = install none
+      AGENT_CLIS: "codex,claude,opencode,pi,kimi"
+
+      # Update check interval in seconds (24h by default)
+      # Skip updates if the corresponding agent is running
+      CLI_UPDATE_INTERVAL: "86400"
+    
+    volumes:
+      # T3 configuration and authentication
+      - t3-home:/home/node
+
+      # Persist installed Agent CLIs
+      - agent-cli:/opt/agent-cli
+
+      # Project workspace
+      - ./workspace:/workspace
+
+volumes:
+  t3-home:
+  agent-cli:

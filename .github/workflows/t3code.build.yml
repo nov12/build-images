@@ -1,0 +1,81 @@
+name: Build T3 Code
+
+on:
+  workflow_dispatch:
+
+  push:
+    branches: [main]
+    paths:
+      - "t3code/Dockerfile"
+      - "t3code/entrypoint.sh"
+      - ".github/workflows/t3code.build.yml"
+
+  schedule:
+    - cron: "17 3 * * 1"
+
+permissions:
+  contents: read
+  packages: write
+
+concurrency:
+  group: t3code-build
+  cancel-in-progress: false
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+
+      - name: Set up Docker Buildx
+        id: buildx
+        uses: docker/setup-buildx-action@v4
+        with:
+          driver: docker-container
+
+      - name: Login to GHCR
+        uses: docker/login-action@v4
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Check T3 Code version
+        id: version
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          VERSION="$(npm view t3 dist-tags.latest)"
+          echo "version=$VERSION" >> "$GITHUB_OUTPUT"
+
+          IMAGE="ghcr.io/nov12/t3code:t3-${VERSION}"
+
+          if [[ "$GITHUB_EVENT_NAME" == "schedule" ]] && \
+             docker buildx imagetools inspect "$IMAGE" >/dev/null 2>&1; then
+            echo "build=false" >> "$GITHUB_OUTPUT"
+            echo "Already built: $VERSION"
+          else
+            echo "build=true" >> "$GITHUB_OUTPUT"
+            echo "Building: $VERSION"
+          fi
+
+      - name: Build and push
+        if: steps.version.outputs.build == 'true'
+        uses: docker/build-push-action@v7
+        with:
+          builder: ${{ steps.buildx.outputs.name }}
+          context: ./t3code
+          file: ./t3code/Dockerfile
+          platforms: linux/amd64
+          push: true
+          pull: true
+          tags: |
+            ghcr.io/nov12/t3code:latest
+            ghcr.io/nov12/t3code:t3-${{ steps.version.outputs.version }}
+          build-args: |
+            T3_VERSION=${{ steps.version.outputs.version }}
+          cache-from: type=gha,scope=t3code
+          cache-to: type=gha,mode=max,scope=t3code
