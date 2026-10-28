@@ -1,0 +1,472 @@
+
+name: Build AionUi
+
+on:
+  workflow_dispatch:
+
+  push:
+    branches: [main]
+    paths:
+      - "aionui/Dockerfile"
+      - "aionui/entrypoint.sh"
+      - ".github/workflows/aionui.build.yml"
+
+  schedule:
+    - cron: "31 3 * * 1"
+
+permissions:
+  contents: read
+  packages: write
+
+concurrency:
+  group: aionui-build
+  cancel-in-progress: false
+
+jobs:
+  prepare:
+    runs-on: ubuntu-24.04
+
+    outputs:
+      image: ${{ steps.image.outputs.name }}
+      tag: ${{ steps.release.outputs.tag }}
+      version: ${{ steps.release.outputs.version }}
+      core_tag: ${{ steps.core.outputs.tag }}
+      build: ${{ steps.decision.outputs.build }}
+
+    steps:
+      - name: Resolve image name
+        id: image
+        shell: bash
+        run: |
+          set -euo pipefail
+          echo "name=ghcr.io/${GITHUB_REPOSITORY_OWNER,,}/aionui" >> "$GITHUB_OUTPUT"
+
+      - name: Check latest AionUi release
+        id: release
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+
+          TAG="$(gh api repos/iOfficeAI/AionUi/releases/latest --jq '.tag_name')"
+
+          if [[ ! "$TAG" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+            echo "::error::Invalid AionUi release tag: $TAG"
+            exit 1
+          fi
+
+          echo "tag=$TAG" >> "$GITHUB_OUTPUT"
+          echo "version=${TAG#v}" >> "$GITHUB_OUTPUT"
+          echo "AionUi: $TAG"
+
+      - name: Checkout upstream release metadata
+        uses: actions/checkout@v7
+        with:
+          repository: iOfficeAI/AionUi
+          ref: ${{ steps.release.outputs.tag }}
+          path: _upstream_aionui
+          persist-credentials: false
+
+      - name: Resolve matching AionCore version
+        id: core
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          CORE_TAG="$(jq -r '.aioncoreVersion // empty' _upstream_aionui/package.json)"
+
+          if [[ ! "$CORE_TAG" =~ ^v[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+$ && ! "$CORE_TAG" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+            echo "::error::Invalid AionCore version: $CORE_TAG"
+            exit 1
+          fi
+
+          echo "tag=$CORE_TAG" >> "$GITHUB_OUTPUT"
+          echo "AionCore: $CORE_TAG"
+
+      - name: Login to GHCR
+        uses: docker/login-action@v4
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Determine whether to build
+        id: decision
+        shell: bash
+        env:
+          IMAGE: ${{ steps.image.outputs.name }}
+          VERSION: ${{ steps.release.outputs.version }}
+        run: |
+          set -euo pipefail
+
+          if [[ "$GITHUB_EVENT_NAME" == "schedule" ]] && \
+             docker buildx imagetools inspect "$IMAGE:$VERSION" --raw > /tmp/manifest.json 2>/dev/null && \
+             jq -e '
+               [.manifests[]?
+                 | select(.platform.os == "linux")
+                 | .platform.architecture]
+               | (index("amd64") != null and index("arm64") != null)
+             ' /tmp/manifest.json >/dev/null; then
+            echo "build=false" >> "$GITHUB_OUTPUT"
+            echo "Already published: $IMAGE:$VERSION"
+          else
+            echo "build=true" >> "$GITHUB_OUTPUT"
+            echo "Building: $IMAGE:$VERSION"
+          fi
+
+  web:
+    needs: prepare
+    if: needs.prepare.outputs.build == 'true'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 60
+
+    steps:
+      - name: Restore cached WebUI assets
+        id: web-cache
+        uses: actions/cache@v6
+        with:
+          path: _web_assets
+          key: aionui-web-bundle-v3-${{ needs.prepare.outputs.tag }}-bun1.4.4
+
+      - name: Checkout AionUi source
+        if: steps.web-cache.outputs.cache-hit != 'true'
+        uses: actions/checkout@v7
+        with:
+          repository: iOfficeAI/AionUi
+          ref: ${{ needs.prepare.outputs.tag }}
+          path: _upstream_aionui
+          persist-credentials: false
+
+      - name: Set up Node.js
+        if: steps.web-cache.outputs.cache-hit != 'true'
+        uses: actions/setup-node@v7
+        with:
+          node-version: "24"
+          package-manager-cache: false
+
+      - name: Set up Bun
+        if: steps.web-cache.outputs.cache-hit != 'true'
+        uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: "1.4.4"
+
+      - name: Build WebUI and server bundle
+        if: steps.web-cache.outputs.cache-hit != 'true'
+        shell: bash
+        working-directory: _upstream_aionui
+        run: |
+          set -euo pipefail
+
+          bun install --frozen-lockfile --ignore-scripts
+          bun run package
+
+          test -s out/renderer/index.html
+
+          mkdir -p ../_web_assets/renderer ../_web_assets/server
+
+          NODE_ENV=production bun build ./scripts/webui.ts \
+            --target=bun \
+            --production \
+            --define 'process.env.NODE_ENV="production"' \
+            --outfile=../_web_assets/server/webui.js
+
+          test -s ../_web_assets/server/webui.js
+
+          cp -a out/renderer/. ../_web_assets/renderer/
+
+          find ../_web_assets/renderer -type f -name '*.map' -delete
+
+      - name: Validate WebUI assets
+        shell: bash
+        run: |
+          set -euo pipefail
+          test -s _web_assets/renderer/index.html
+          test -d _web_assets/renderer/assets
+          test -s _web_assets/server/webui.js
+
+      - name: Upload shared WebUI assets
+        uses: actions/upload-artifact@v7
+        with:
+          name: aionui-web-bundle
+          path: _web_assets/
+          if-no-files-found: error
+          retention-days: 7
+          compression-level: 3
+
+  build:
+    needs: [prepare, web]
+    if: needs.prepare.outputs.build == 'true'
+
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - arch: amd64
+            runner: ubuntu-24.04
+          - arch: arm64
+            runner: ubuntu-24.04-arm
+
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 90
+
+    steps:
+      - name: Checkout image repository
+        uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+
+      - name: Download shared WebUI assets
+        uses: actions/download-artifact@v8
+        with:
+          name: aionui-web-bundle
+          path: _web_assets
+
+      - name: Validate shared WebUI assets
+        shell: bash
+        run: |
+          set -euo pipefail
+          test -s _web_assets/renderer/index.html
+          test -s _web_assets/server/webui.js
+
+      - name: Download and verify official AionCore
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          CORE_TAG: ${{ needs.prepare.outputs.core_tag }}
+          ARCH: ${{ matrix.arch }}
+        run: |
+          set -euo pipefail
+
+          case "$ARCH" in
+            amd64) TARGET="x86_64-unknown-linux-gnu" ;;
+            arm64) TARGET="aarch64-unknown-linux-gnu" ;;
+            *)
+              echo "::error::Unsupported architecture: $ARCH"
+              exit 1
+              ;;
+          esac
+
+          ARCHIVE="aioncore-${CORE_TAG}-${TARGET}.tar.gz"
+
+          mkdir -p _core_release _aioncore
+
+          gh release download "$CORE_TAG" \
+            --repo iOfficeAI/AionCore \
+            --pattern "$ARCHIVE" \
+            --pattern "aioncore-checksums.txt" \
+            --dir _core_release
+
+          awk -v file="$ARCHIVE" \
+            '$2 == file { print }' \
+            _core_release/aioncore-checksums.txt \
+            > _core_release/selected.sha256
+
+          test -s _core_release/selected.sha256
+
+          (
+            cd _core_release
+            sha256sum -c selected.sha256
+          )
+
+          tar -xzf "_core_release/$ARCHIVE" \
+            -C _aioncore aioncore
+
+          test -x _aioncore/aioncore
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v4
+
+      - name: Login to GHCR
+        uses: docker/login-action@v4
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Build and push by digest
+        id: docker
+        uses: docker/build-push-action@v7
+        with:
+          context: ./aionui
+          file: ./aionui/Dockerfile
+          build-contexts: |
+            web-assets=./_web_assets
+            core-bin=./_aioncore
+          platforms: linux/${{ matrix.arch }}
+          pull: true
+          provenance: false
+          sbom: false
+          outputs: type=image,name=${{ needs.prepare.outputs.image }},push-by-digest=true,name-canonical=true,push=true
+          cache-from: type=gha,scope=aionui-${{ matrix.arch }}
+          cache-to: type=gha,mode=max,scope=aionui-${{ matrix.arch }}
+
+      - name: Verify runtime contents
+        shell: bash
+        env:
+          IMAGE: ${{ needs.prepare.outputs.image }}
+          DIGEST: ${{ steps.docker.outputs.digest }}
+        run: |
+          set -euo pipefail
+
+          [[ "$DIGEST" =~ ^sha256:[a-f0-9]{64}$ ]]
+
+          docker pull "$IMAGE@$DIGEST"
+
+          docker image inspect "$IMAGE@$DIGEST" \
+            --format 'Image size: {{.Size}} bytes'
+
+          docker run --rm \
+            --entrypoint /bin/sh "$IMAGE@$DIGEST" -ec '
+              test -s /app/scripts/webui.js
+              test -s /app/out/renderer/index.html
+              test ! -e /app/node_modules
+              test ! -e /app/packages
+              test ! -e /app/out/main
+              test ! -e /app/out/preload
+              for cmd in node npm bun bash curl git find flock timeout rg; do
+                command -v "$cmd" >/dev/null
+              done
+            '
+
+      - name: Smoke test
+        shell: bash
+        env:
+          IMAGE: ${{ needs.prepare.outputs.image }}
+          DIGEST: ${{ steps.docker.outputs.digest }}
+          ARCH: ${{ matrix.arch }}
+        run: |
+          set -euo pipefail
+
+          docker run -d \
+            --name aionui-smoke \
+            -e AGENT_CLIS=none \
+            -e CLI_UPDATE_INTERVAL=0 \
+            -p 127.0.0.1:25808:25808 \
+            "$IMAGE@$DIGEST"
+
+          cleanup() {
+            status=$?
+            if (( status != 0 )); then
+              docker logs aionui-smoke 2>&1 | \
+                sed -E 's/(Initial admin password:).*/\1 [REDACTED]/' || true
+            fi
+            docker rm -f aionui-smoke >/dev/null 2>&1 || true
+          }
+          trap cleanup EXIT
+
+          DEADLINE=$((SECONDS + 20))
+
+          while (( SECONDS < DEADLINE )); do
+            if [[ "$(docker inspect -f '{{.State.Running}}' aionui-smoke)" != "true" ]]; then
+              echo "::error::Container exited unexpectedly: $ARCH"
+              exit 1
+            fi
+
+            ACTUAL_PORT="$(docker logs aionui-smoke 2>&1 | \
+              sed -nE 's/.*\[webui\] launching[[:space:]]*: port=([0-9]+).*/\1/p' | \
+              sed -n '1p')"
+
+            if [[ -n "$ACTUAL_PORT" && "$ACTUAL_PORT" != "25808" ]]; then
+              echo "::error::Unexpected WebUI port: $ACTUAL_PORT (expected production default 25808)"
+              exit 1
+            fi
+
+            if curl -fsS --max-time 1 -o /dev/null \
+                 http://127.0.0.1:25808/ 2>/dev/null && \
+               curl -fsS --max-time 1 -o /dev/null \
+                 http://127.0.0.1:25808/api/auth/status 2>/dev/null; then
+              echo "Smoke test passed: $ARCH"
+              exit 0
+            fi
+
+            sleep 1
+          done
+
+          echo "::error::Startup timeout after 20 seconds: $ARCH"
+          exit 1
+
+      - name: Export image digest
+        shell: bash
+        env:
+          DIGEST: ${{ steps.docker.outputs.digest }}
+        run: |
+          set -euo pipefail
+
+          [[ "$DIGEST" =~ ^sha256:[a-f0-9]{64}$ ]]
+
+          mkdir -p _digests
+          touch "_digests/${DIGEST#sha256:}"
+
+      - name: Upload architecture digest
+        uses: actions/upload-artifact@v7
+        with:
+          name: aionui-digest-${{ matrix.arch }}
+          path: _digests/*
+          if-no-files-found: error
+          retention-days: 1
+
+  publish:
+    needs: [prepare, build]
+    if: needs.prepare.outputs.build == 'true' && needs.build.result == 'success'
+    runs-on: ubuntu-24.04
+
+    steps:
+      - name: Download architecture digests
+        uses: actions/download-artifact@v8
+        with:
+          pattern: aionui-digest-*
+          path: _digests
+          merge-multiple: true
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v4
+
+      - name: Login to GHCR
+        uses: docker/login-action@v4
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Publish multi-architecture manifest
+        shell: bash
+        env:
+          IMAGE: ${{ needs.prepare.outputs.image }}
+          VERSION: ${{ needs.prepare.outputs.version }}
+        run: |
+          set -euo pipefail
+
+          mapfile -t DIGESTS < <(
+            find _digests -maxdepth 1 -type f -printf '%f\n' | sort
+          )
+
+          if [[ ${#DIGESTS[@]} -ne 2 ]]; then
+            echo "::error::Expected two architecture digests"
+            exit 1
+          fi
+
+          SOURCES=()
+
+          for DIGEST in "${DIGESTS[@]}"; do
+            [[ "$DIGEST" =~ ^[a-f0-9]{64}$ ]]
+            SOURCES+=("$IMAGE@sha256:$DIGEST")
+          done
+
+          docker buildx imagetools create \
+            -t "$IMAGE:latest" \
+            -t "$IMAGE:$VERSION" \
+            "${SOURCES[@]}"
+
+          docker buildx imagetools inspect \
+            "$IMAGE:$VERSION" --raw > manifest.json
+
+          jq -e '
+            [.manifests[]?
+              | select(.platform.os == "linux")
+              | .platform.architecture]
+            | (index("amd64") != null and index("arm64") != null)
+          ' manifest.json >/dev/null
+
+          echo "Published: $IMAGE:latest"
+          echo "Published: $IMAGE:$VERSION"

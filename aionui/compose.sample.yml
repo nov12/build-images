@@ -1,0 +1,44 @@
+services:
+  aionui:
+    image: ghcr.io/nov12/aionui:latest
+    container_name: aionui
+    hostname: aionui
+    restart: unless-stopped
+
+    user: "${PUID:-1000}:${PGID:-1000}"
+
+    ports:
+      - "25808:25808"
+
+    environment:
+      AIONUI_ALLOW_REMOTE: "1"
+      AIONUI_DATA_DIR: "/data"
+
+      # Available CLIs:
+      # codex,claude,opencode,gemini,qwen,kimi,
+      # copilot,pi,cline,amp,agy
+      # all = install all; none or empty = install none
+      AGENT_CLIS: "codex,claude,opencode,pi,kimi"
+
+      # Update interval in seconds (24h by default)
+      # Set to 0 to disable periodic checks
+      # Skip updates while the corresponding CLI is running
+      CLI_UPDATE_INTERVAL: "86400"
+
+    volumes:
+      # AionUi database, assistants, skills and settings
+      - aionui-data:/data
+
+      # User configuration and authentication
+      - aionui-home:/home/node
+
+      # Persistent Agent CLI installations
+      - agent-cli:/home/node/.local
+
+      # Project workspace
+      - ./workspace:/workspace
+
+volumes:
+  aionui-data:
+  aionui-home:
+  agent-cli:
