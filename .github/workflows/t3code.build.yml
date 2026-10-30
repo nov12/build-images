@@ -2,14 +2,17 @@ name: Build T3 Code
 
 on:
   workflow_dispatch:
-
+  pull_request:
+    paths:
+      - "t3code/**"
+      - ".github/workflows/t3code.build.yml"
+      - ".github/workflows/docker-release.yml"
   push:
     branches: [main]
     paths:
-      - "t3code/Dockerfile"
-      - "t3code/entrypoint.sh"
+      - "t3code/**"
       - ".github/workflows/t3code.build.yml"
-
+      - ".github/workflows/docker-release.yml"
   schedule:
     - cron: "17 3 * * 1"
 
@@ -18,64 +21,63 @@ permissions:
   packages: write
 
 concurrency:
-  group: t3code-build
+  group: t3code-${{ github.ref }}
   cancel-in-progress: false
 
 jobs:
-  build:
-    runs-on: ubuntu-latest
-
+  resolve:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    outputs:
+      version: ${{ steps.resolve.outputs.version }}
+      build: ${{ steps.decision.outputs.build || steps.resolve.outputs.build }}
+      args: ${{ steps.resolve.outputs.args }}
     steps:
       - name: Checkout
         uses: actions/checkout@v7
-
-      - name: Set up Docker Buildx
-        id: buildx
-        uses: docker/setup-buildx-action@v4
         with:
-          driver: docker-container
-
-      - name: Login to GHCR
+          persist-credentials: false
+      - name: Resolve version
+        id: resolve
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          tag="$(gh api repos/pingdotgg/t3code/releases/latest --jq .tag_name)"
+          [[ "$tag" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]]
+          echo "tag=$tag" >> "$GITHUB_OUTPUT"
+          version="t3-${tag#v}"
+          {
+            echo "args=T3_VERSION=${tag#v}"
+            echo "version=$version"
+            echo 'build=true'
+          } >> "$GITHUB_OUTPUT"
+      - name: Login for release lookup
+        if: github.event_name == 'schedule'
         uses: docker/login-action@v4
         with:
           registry: ghcr.io
           username: ${{ github.actor }}
-          password: ${{ secrets.GITHUB_TOKEN }}
-
-      - name: Check T3 Code version
-        id: version
-        shell: bash
+          password: ${{ github.token }}
+      - name: Skip existing multi-platform release
+        id: decision
+        if: github.event_name == 'schedule'
+        env:
+          VERSION: ${{ steps.resolve.outputs.version }}
         run: |
           set -euo pipefail
-
-          VERSION="$(npm view t3 dist-tags.latest)"
-          echo "version=$VERSION" >> "$GITHUB_OUTPUT"
-
-          IMAGE="ghcr.io/nov12/t3code:t3-${VERSION}"
-
-          if [[ "$GITHUB_EVENT_NAME" == "schedule" ]] && \
-             docker buildx imagetools inspect "$IMAGE" >/dev/null 2>&1; then
-            echo "build=false" >> "$GITHUB_OUTPUT"
-            echo "Already built: $VERSION"
-          else
-            echo "build=true" >> "$GITHUB_OUTPUT"
-            echo "Building: $VERSION"
+          image="ghcr.io/${GITHUB_REPOSITORY_OWNER,,}/t3code"
+          if docker buildx imagetools inspect "$image:$VERSION" --raw > manifest.json 2>/dev/null && \
+             jq -e '[.manifests[] | .platform | "\(.os)/\(.architecture)"] | sort == ["linux/amd64", "linux/arm64"]' manifest.json; then
+            echo 'build=false' >> "$GITHUB_OUTPUT"
           fi
 
-      - name: Build and push
-        if: steps.version.outputs.build == 'true'
-        uses: docker/build-push-action@v7
-        with:
-          builder: ${{ steps.buildx.outputs.name }}
-          context: ./t3code
-          file: ./t3code/Dockerfile
-          platforms: linux/amd64
-          push: true
-          pull: true
-          tags: |
-            ghcr.io/nov12/t3code:latest
-            ghcr.io/nov12/t3code:t3-${{ steps.version.outputs.version }}
-          build-args: |
-            T3_VERSION=${{ steps.version.outputs.version }}
-          cache-from: type=gha,scope=t3code
-          cache-to: type=gha,mode=max,scope=t3code
+  release:
+    needs: resolve
+    if: needs.resolve.outputs.build == 'true'
+    uses: ./.github/workflows/docker-release.yml
+    with:
+      project: t3code
+      version: ${{ needs.resolve.outputs.version }}
+      build-args: ${{ needs.resolve.outputs.args }}
+      publish: ${{ github.event_name != 'pull_request' && github.ref == format('refs/heads/{0}', github.event.repository.default_branch) }}

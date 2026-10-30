@@ -14,15 +14,15 @@ services:
       # all = install all; none or empty string = install none
       AGENT_CLIS: "codex,claude,opencode,pi,kimi"
 
-      # Update check interval in seconds (24h by default)
-      # Skip updates if the corresponding agent is running
+      # Update interval in seconds; 0 disables periodic checks
+      # Updates are postponed while the corresponding Agent is running
       CLI_UPDATE_INTERVAL: "86400"
-    
+
     volumes:
-      # T3 configuration and authentication
+      # User configuration and Agent authentication
       - t3-home:/home/node
 
-      # Persist installed Agent CLIs
+      # Installed Agent CLIs
       - agent-cli:/opt/agent-cli
 
       # Project workspace
