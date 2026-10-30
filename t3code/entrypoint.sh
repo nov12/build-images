@@ -18,12 +18,12 @@ is_running() {
   for proc in /proc/[0-9]*; do
     [[ -r "$proc/cmdline" ]] || continue
 
-    cmd="$(tr '\0' ' ' < "$proc/cmdline" 2>/dev/null || true)"
+    cmd="$(tr '\0' ' ' <"$proc/cmdline" 2>/dev/null || true)"
     exe="$(readlink "$proc/exe" 2>/dev/null || true)"
 
     if [[ "$cmd" == *"$ROOT/releases/$name/"* ||
-          "$cmd" == *"$ROOT/bin/$name "* ||
-          "$exe" == "$ROOT/releases/$name/"* ]]; then
+      "$cmd" == *"$ROOT/bin/$name "* ||
+      "$exe" == "$ROOT/releases/$name/"* ]]; then
       return 0
     fi
   done
@@ -65,7 +65,7 @@ update_one() {
 
   # 兼容此前的全局 npm 安装结构
   if [[ "$current" == "$wanted" ||
-        "$current" == "../releases/$name/$latest/bin/$name" ]]; then
+    "$current" == "../releases/$name/$latest/bin/$name" ]]; then
     if timeout 15s "$link" --version >/dev/null 2>&1; then
       log "$name: up to date ($latest)"
       prune_old "$name" "$latest"
@@ -104,16 +104,16 @@ NODE
 
   # 本地安装，避免全局 prefix/lib 路径问题
   if ! timeout 300s npm install \
-      --prefix "$stage" \
-      --no-save \
-      --no-package-lock \
-      --include=optional \
-      --no-audit --no-fund \
-      --foreground-scripts \
-      --fetch-retries=0 \
-      --fetch-timeout=20000 \
-      --cache "$CACHE" \
-      "$package@$latest"; then
+    --prefix "$stage" \
+    --no-save \
+    --no-package-lock \
+    --include=optional \
+    --no-audit --no-fund \
+    --foreground-scripts \
+    --fetch-retries=0 \
+    --fetch-timeout=20000 \
+    --cache "$CACHE" \
+    "$package@$latest"; then
 
     log "$name: installation failed; keeping old version"
     rm -rf -- "$stage"
@@ -122,7 +122,7 @@ NODE
 
   # 验证新版本能够实际运行
   if ! timeout 15s "$stage/node_modules/.bin/$name" \
-      --version >/dev/null 2>&1; then
+    --version >/dev/null 2>&1; then
 
     log "$name: validation failed; keeping old version"
     rm -rf -- "$stage"
@@ -185,35 +185,24 @@ update_all() {
       ;;
   esac
 
-  IFS=',' read -r -a agents <<< "$selected"
+  IFS=',' read -r -a agents <<<"$selected"
 
   for agent in "${agents[@]}"; do
     [[ -z "$agent" || -n "${seen[$agent]+x}" ]] && continue
     seen[$agent]=1
 
     case "$agent" in
-      codex)
-        update_one codex '@openai/codex' ;;
-      claude)
-        update_one claude '@anthropic-ai/claude-code' ;;
-      opencode)
-        update_one opencode '@opencode/cli' ;;
-      gemini)
-        update_one gemini '@google/gemini-cli' ;;
-      qwen)
-        update_one qwen '@qwen-code/qwen-code' ;;
-      kimi)
-        update_one kimi '@moonshot-ai/kimi-code' ;;
-      copilot)
-        update_one copilot '@github/copilot' ;;
-      pi)
-        update_one pi '@mariozechner/pi-coding-agent' ;;
-      cline)
-        update_one cline 'cline' ;;
-      amp)
-        update_one amp '@ampcode/cli' ;;
-      *)
-        log "$agent: unsupported, skipping" ;;
+      codex) update_one codex '@openai/codex' ;;
+      claude) update_one claude '@anthropic-ai/claude-code' ;;
+      opencode) update_one opencode '@opencode/cli' ;;
+      gemini) update_one gemini '@google/gemini-cli' ;;
+      qwen) update_one qwen '@qwen-code/qwen-code' ;;
+      kimi) update_one kimi '@moonshot-ai/kimi-code' ;;
+      copilot) update_one copilot '@github/copilot' ;;
+      pi) update_one pi '@mariozechner/pi-coding-agent' ;;
+      cline) update_one cline 'cline' ;;
+      amp) update_one amp '@ampcode/cli' ;;
+      *) log "$agent: unsupported, skipping" ;;
     esac
   done
 
@@ -224,7 +213,7 @@ update_all() {
 # 首次启动检查
 update_all || log "update cycle failed; continuing to start T3"
 
-# 定期检查，不阻塞 T3 Code
+# 后台定期检查，不阻塞主进程
 if [[ "$INTERVAL" =~ ^[1-9][0-9]*$ ]]; then
   (
     while sleep "$INTERVAL"; do
@@ -233,5 +222,5 @@ if [[ "$INTERVAL" =~ ^[1-9][0-9]*$ ]]; then
   ) &
 fi
 
-# 启动 T3 Code，Shell 不再作为主进程常驻
+# 启动主进程
 exec "$@"
