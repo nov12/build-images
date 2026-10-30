@@ -78,6 +78,9 @@ jobs:
     uses: ./.github/workflows/docker-release.yml
     with:
       project: t3code
+      check-command: t3 --help >/dev/null
+      upstream-repository: pingdotgg/t3code
+      upstream-version-prefix: t3-
       version: ${{ needs.resolve.outputs.version }}
       build-args: ${{ needs.resolve.outputs.args }}
       publish: ${{ github.event_name != 'pull_request' && github.ref == format('refs/heads/{0}', github.event.repository.default_branch) }}

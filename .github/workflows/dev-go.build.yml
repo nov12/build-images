@@ -116,6 +116,8 @@ jobs:
     uses: ./.github/workflows/docker-release.yml
     with:
       project: dev-go
+      check-command: python --version; go version; node --version; npm --version; task --version
+      context: .
       version: ${{ needs.resolve.outputs.version }}
       build-args: ${{ needs.resolve.outputs.args }}
       build-key: ${{ needs.resolve.outputs.build_key }}

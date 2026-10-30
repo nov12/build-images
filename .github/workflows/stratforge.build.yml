@@ -59,6 +59,7 @@ jobs:
     uses: ./.github/workflows/docker-release.yml
     with:
       project: stratforge
+      check-command: python -c 'import numpy, talib'
       version: ${{ needs.resolve.outputs.version }}
       roles: '["live", "research"]'
       publish: ${{ github.event_name != 'pull_request' && github.ref == format('refs/heads/{0}', github.event.repository.default_branch) }}

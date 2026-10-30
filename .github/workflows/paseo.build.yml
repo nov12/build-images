@@ -1,0 +1,107 @@
+name: Build Paseo
+
+on:
+  workflow_dispatch:
+  pull_request:
+    paths:
+      - "paseo/**"
+      - "t3code/entrypoint.sh"
+      - ".github/workflows/paseo.build.yml"
+      - ".github/workflows/docker-release.yml"
+  push:
+    branches: [main]
+    paths:
+      - "paseo/**"
+      - "t3code/entrypoint.sh"
+      - ".github/workflows/paseo.build.yml"
+      - ".github/workflows/docker-release.yml"
+  schedule:
+    - cron: "31 3 * * 1"
+
+permissions:
+  contents: read
+  packages: write
+
+concurrency:
+  group: paseo-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  resolve:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    outputs:
+      version: ${{ steps.resolve.outputs.version }}
+      build: ${{ steps.decision.outputs.build || steps.resolve.outputs.build }}
+      args: ${{ steps.resolve.outputs.args }}
+      build_key: ${{ steps.resolve.outputs.build_key }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+      - name: Check startup script syntax
+        run: |
+          bash -n paseo/entrypoint.sh
+          node --check paseo/plugins.mjs
+      - name: Resolve stable release
+        id: resolve
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          tag="$(gh api repos/getpaseo/paseo/releases/latest --jq .tag_name)"
+          [[ "$tag" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]]
+          version="${tag#v}"
+          test "$(npm view "@getpaseo/cli@$version" version)" = "$version"
+          build_key="$(
+            {
+              printf '%s\n' "$version"
+              sha256sum paseo/Dockerfile paseo/entrypoint.sh paseo/plugins.mjs t3code/entrypoint.sh \
+                .github/workflows/paseo.build.yml .github/workflows/docker-release.yml
+            } | sha256sum | cut -d ' ' -f1
+          )"
+          {
+            echo "args=PASEO_VERSION=$version"
+            echo "version=paseo-$version"
+            echo "build_key=$build_key"
+            echo 'build=true'
+          } >> "$GITHUB_OUTPUT"
+      - name: Login for release lookup
+        if: github.event_name == 'schedule'
+        uses: docker/login-action@v4
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ github.token }}
+      - name: Skip unchanged multi-platform release
+        id: decision
+        if: github.event_name == 'schedule'
+        env:
+          VERSION: ${{ steps.resolve.outputs.version }}
+          BUILD_KEY: ${{ steps.resolve.outputs.build_key }}
+        run: |
+          set -euo pipefail
+          image="ghcr.io/${GITHUB_REPOSITORY_OWNER,,}/paseo"
+          if docker buildx imagetools inspect "$image:$VERSION" --raw > manifest.json 2>/dev/null && \
+             jq -e --arg key "$BUILD_KEY" '
+               .annotations["io.build-images.build-key"] == $key and
+               ([.manifests[] | .platform | "\(.os)/\(.architecture)"] | sort == ["linux/amd64", "linux/arm64"])
+             ' manifest.json; then
+            echo 'build=false' >> "$GITHUB_OUTPUT"
+          fi
+
+  release:
+    needs: resolve
+    if: needs.resolve.outputs.build == 'true'
+    uses: ./.github/workflows/docker-release.yml
+    with:
+      project: paseo
+      check-command: paseo --version
+      context: .
+      upstream-repository: getpaseo/paseo
+      upstream-version-prefix: paseo-
+      version: ${{ needs.resolve.outputs.version }}
+      build-args: ${{ needs.resolve.outputs.args }}
+      build-key: ${{ needs.resolve.outputs.build_key }}
+      publish: ${{ github.event_name != 'pull_request' && github.ref == format('refs/heads/{0}', github.event.repository.default_branch) }}
