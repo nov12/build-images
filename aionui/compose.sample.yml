@@ -14,25 +14,22 @@ services:
       AIONUI_ALLOW_REMOTE: "1"
       AIONUI_DATA_DIR: "/data"
 
-      # Available CLIs:
-      # codex,claude,opencode,gemini,qwen,kimi,
-      # copilot,pi,cline,amp,agy
-      # all = install all; none or empty = install none
+      # Available CLIs: codex,claude,opencode,gemini,qwen,kimi,copilot,pi,cline,amp,agy
+      # all = install all; none or empty string = install none
       AGENT_CLIS: "codex,claude,opencode,pi,kimi"
 
-      # Update interval in seconds (24h by default)
-      # Set to 0 to disable periodic checks
-      # Skip updates while the corresponding CLI is running
+      # Update interval in seconds; 0 disables periodic checks
+      # Updates are postponed while the corresponding Agent is running
       CLI_UPDATE_INTERVAL: "86400"
 
     volumes:
-      # AionUi database, assistants, skills and settings
+      # Database, assistants, skills and application settings
       - aionui-data:/data
 
-      # User configuration and authentication
+      # User configuration and Agent authentication
       - aionui-home:/home/node
 
-      # Persistent Agent CLI installations
+      # Installed Agent CLIs
       - agent-cli:/home/node/.local
 
       # Project workspace

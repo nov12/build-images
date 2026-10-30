@@ -21,11 +21,12 @@ is_running() {
     [[ -r "$p/cmdline" ]] || continue
     [[ "${p##*/}" == "$$" ]] && continue
 
-    cmd="$(tr '\0' ' ' < "$p/cmdline" 2>/dev/null || true)"
+    cmd="$(tr '\0' ' ' <"$p/cmdline" 2>/dev/null || true)"
 
-    if [[ "$cmd" == *"/releases/$name-"* ||
-          "$cmd" == *"/bin/$name "* ||
-          "$cmd" == "$name "* ]]; then
+    if [[ "$cmd" == *"/releases/$name/"* ||
+      "$cmd" == *"/releases/$name-"* ||
+      "$cmd" == *"/bin/$name "* ||
+      "$cmd" == "$name "* ]]; then
       return 0
     fi
   done
@@ -39,18 +40,21 @@ prune_old() {
 
   is_running "$name" && return 0
 
+  find "$ROOT/releases/$name" \
+    -mindepth 1 -maxdepth 1 -type d \
+    ! -name "$keep" \
+    -exec rm -rf -- {} +
+
   find "$ROOT/releases" \
     -mindepth 1 -maxdepth 1 \
     -type d -name "${name}-*" \
-    ! -name "${name}-${keep}" \
     -exec rm -rf -- {} +
 }
 
 # npm CLI 安装和自动更新
 update_npm() {
   local name="$1" package="$2"
-  local latest target link wanted stage tmp
-  local -a flags=()
+  local latest target legacy link wanted stage tmp
 
   latest="$(timeout 20s npm view "$package" version \
     --fetch-retries=0 \
@@ -61,12 +65,13 @@ update_npm() {
     return 0
   fi
 
-  target="$ROOT/releases/${name}-${latest}"
+  target="$ROOT/releases/$name/$latest"
+  legacy="$ROOT/releases/${name}-${latest}"
   link="$ROOT/bin/$name"
-  wanted="../releases/${name}-${latest}/node_modules/.bin/$name"
+  wanted="../releases/$name/$latest/node_modules/.bin/$name"
 
   if [[ "$(readlink "$link" 2>/dev/null || true)" == "$wanted" ]] \
-     && timeout 20s "$link" --version >/dev/null 2>&1; then
+    && timeout 20s "$link" --version >/dev/null 2>&1; then
 
     log "$name: current ($latest)"
     prune_old "$name" "$latest"
@@ -78,16 +83,27 @@ update_npm() {
     return 0
   fi
 
-  # 仅允许所选包执行安装脚本
-  flags+=("--allow-scripts=$package")
+  mkdir -p "$ROOT/releases/$name"
+
+  if [[ ! -e "$target" ]] && timeout 20s "$legacy/node_modules/.bin/$name" \
+    --version >/dev/null 2>&1; then
+    mv -- "$legacy" "$target"
+  fi
 
   if ! timeout 20s "$target/node_modules/.bin/$name" \
-      --version >/dev/null 2>&1; then
+    --version >/dev/null 2>&1; then
 
-    stage="$(mktemp -d "$ROOT/releases/.${name}.XXXXXXXX")"
+    stage="$(mktemp -d "$ROOT/releases/$name/.stage.XXXXXXXX")"
 
-    printf '{"name":"managed-agent","private":true,"version":"1.0.0"}\n' \
-      > "$stage/package.json"
+    # npm 的本地安装从项目配置读取脚本白名单
+    NODE_STAGE="$stage" NODE_PKG="$package" node <<'NODE_CONFIG'
+const fs = require('node:fs');
+const path = require('node:path');
+fs.writeFileSync(path.join(process.env.NODE_STAGE, 'package.json'), JSON.stringify({
+  name: 'managed-agent', private: true, version: '1.0.0',
+  allowScripts: { [process.env.NODE_PKG]: true }
+}));
+NODE_CONFIG
 
     log "$name: installing $latest"
 
@@ -99,7 +115,6 @@ update_npm() {
       --foreground-scripts \
       --fetch-retries=0 \
       --fetch-timeout=20000 \
-      "${flags[@]}" \
       "$package@$latest"; then
 
       log "$name: installation failed"
@@ -108,7 +123,7 @@ update_npm() {
     fi
 
     if ! timeout 20s "$stage/node_modules/.bin/$name" \
-        --version >/dev/null 2>&1; then
+      --version >/dev/null 2>&1; then
 
       log "$name: validation failed"
       rm -rf -- "$stage"
@@ -202,23 +217,23 @@ update_all() {
     return 0
   fi
 
-  IFS=',' read -r -a agents <<< "$selected"
+  IFS=',' read -r -a agents <<<"$selected"
 
   for agent in "${agents[@]}"; do
     case "$agent" in
-      codex)    update_npm codex '@openai/codex' ;;
-      claude)   update_npm claude '@anthropic-ai/claude-code' ;;
+      codex) update_npm codex '@openai/codex' ;;
+      claude) update_npm claude '@anthropic-ai/claude-code' ;;
       opencode) update_npm opencode '@opencode/cli' ;;
-      gemini)   update_npm gemini '@google/gemini-cli' ;;
-      qwen)     update_npm qwen '@qwen-code/qwen-code' ;;
-      kimi)     update_npm kimi '@moonshot-ai/kimi-code' ;;
-      copilot)  update_npm copilot '@github/copilot' ;;
-      pi)       update_npm pi '@mariozechner/pi-coding-agent' ;;
-      cline)    update_npm cline 'cline' ;;
-      amp)      update_npm amp '@ampcode/cli' ;;
-      agy)      update_agy ;;
-      "")       ;;
-      *)        log "$agent: unsupported, skipped" ;;
+      gemini) update_npm gemini '@google/gemini-cli' ;;
+      qwen) update_npm qwen '@qwen-code/qwen-code' ;;
+      kimi) update_npm kimi '@moonshot-ai/kimi-code' ;;
+      copilot) update_npm copilot '@github/copilot' ;;
+      pi) update_npm pi '@mariozechner/pi-coding-agent' ;;
+      cline) update_npm cline 'cline' ;;
+      amp) update_npm amp '@ampcode/cli' ;;
+      agy) update_agy ;;
+      "") ;;
+      *) log "$agent: unsupported, skipped" ;;
     esac
   done
 
@@ -226,12 +241,43 @@ update_all() {
   exec {fd}>&-
 }
 
+# 按上游托管运行时目录契约复用镜像内的 Node.js，不改动已有用户缓存
+prepare_node_runtime() {
+  local data_dir="${AIONUI_DATA_DIR:-$HOME/.aionui-web}"
+  local version arch runtime stage arg
+  local previous=""
+  for arg in "$@"; do
+    if [[ "$previous" == --data-dir ]]; then data_dir="$arg"; fi
+    previous="$arg"
+  done
+  version="$(cat /usr/local/share/aionui/managed-node-version)"
+  arch="$(node -p process.arch)"
+  runtime="$data_dir/runtime/node/node-v$version-linux-$arch"
+  [[ -e "$runtime" ]] && return 0
+  mkdir -p "$(dirname "$runtime")"
+  stage="$(mktemp -d "$(dirname "$runtime")/.system-node.XXXXXXXX")"
+  mkdir -p "$stage/bin" "$stage/lib/node_modules"
+  for arg in node npm npx; do
+    ln -s "/usr/local/bin/$arg" "$stage/bin/$arg"
+  done
+  ln -s /usr/local/lib/node_modules/npm "$stage/lib/node_modules/npm"
+  if ! mv -Tn "$stage" "$runtime"; then
+    rm -rf -- "$stage"
+    return 1
+  fi
+  [[ ! -d "$stage" ]] || rm -rf -- "$stage"
+}
+
+if [[ -f /usr/local/share/aionui/managed-node-version ]]; then
+  prepare_node_runtime "$@"
+fi
+
 # 首次启动检查并安装
 update_all || log "Initial CLI update failed"
 
-# 后台定期检查，不阻塞 AionUi
+# 后台定期检查，不阻塞主进程
 if [[ "$INTERVAL" =~ ^[1-9][0-9]*$ ]] \
-   && [[ -n "$SELECTED" && "$SELECTED" != "none" ]]; then
+  && [[ -n "$SELECTED" && "$SELECTED" != "none" ]]; then
 
   (
     while sleep "$INTERVAL"; do
