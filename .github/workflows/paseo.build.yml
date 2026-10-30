@@ -40,6 +40,10 @@ jobs:
         uses: actions/checkout@v7
         with:
           persist-credentials: false
+      - name: Check startup script syntax
+        run: |
+          bash -n paseo/entrypoint.sh
+          node --check paseo/plugins.mjs
       - name: Resolve stable release
         id: resolve
         env:
@@ -53,7 +57,7 @@ jobs:
           build_key="$(
             {
               printf '%s\n' "$version"
-              sha256sum paseo/Dockerfile t3code/entrypoint.sh \
+              sha256sum paseo/Dockerfile paseo/entrypoint.sh paseo/plugins.mjs t3code/entrypoint.sh \
                 .github/workflows/paseo.build.yml .github/workflows/docker-release.yml
             } | sha256sum | cut -d ' ' -f1
           )"

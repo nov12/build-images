@@ -72,6 +72,8 @@ COPY --from=paseo-builder /opt/paseo/ /opt/paseo/
 
 # 使用仓库根目录作为构建上下文，直接复用已有 Agent CLI 管理入口
 COPY --chmod=755 t3code/entrypoint.sh /usr/local/bin/entrypoint.sh
+COPY --chmod=755 paseo/entrypoint.sh /usr/local/lib/paseo/entrypoint.sh
+COPY paseo/plugins.mjs /usr/local/lib/paseo/plugins.mjs
 
 # 检查最终运行环境能加载原生终端模块；CLI 版本由 CI 验证
 RUN node -e "require('/opt/paseo/node_modules/node-pty')"
@@ -92,6 +94,6 @@ WORKDIR /workspace
 
 EXPOSE 6767
 
-ENTRYPOINT ["/usr/bin/tini", "--", "/usr/local/bin/entrypoint.sh"]
+ENTRYPOINT ["/usr/bin/tini", "-g", "--", "/usr/local/bin/entrypoint.sh"]
 
-CMD ["node", "/opt/paseo/node_modules/@getpaseo/server/dist/scripts/supervisor-entrypoint.js"]
+CMD ["/usr/local/lib/paseo/entrypoint.sh", "node", "/opt/paseo/node_modules/@getpaseo/server/dist/scripts/supervisor-entrypoint.js"]

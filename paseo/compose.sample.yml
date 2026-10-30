@@ -23,12 +23,20 @@ services:
       # all = install all; none or empty string = install none
       AGENT_CLIS: "codex,claude,opencode,pi,kimi"
 
+      # Comma-separated plugin sources; installed after the daemon is ready
+      # Git Graph: https://paseo.sh/plugins/siyxo511/git-graph
+      # Agent Usage: https://paseo.sh/plugins/casonmo/agent-usage (local Agent token usage statistics)
+      # First setup enables plugins unless pluginsEnabled is already explicitly set
+      # Existing versions and enabled/disabled states are preserved; failures retry on next start
+      # Unset, empty or none skips installation; removing a source does not uninstall it
+      PASEO_PLUGINS: "siyxo511/git-graph,casonmo/agent-usage"
+
       # Update interval in seconds; 0 disables periodic checks
       # Updates are postponed while the corresponding Agent is running
       CLI_UPDATE_INTERVAL: "86400"
 
     volumes:
-      # Daemon state, user configuration and Agent authentication
+      # Daemon state, installed plugins and their settings, user configuration and Agent authentication
       - paseo-home:/home/node
 
       # Installed Agent CLIs; avoid concurrent updates when sharing this volume
