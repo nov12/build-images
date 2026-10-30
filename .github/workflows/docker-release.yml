@@ -1,4 +1,4 @@
-name: Test and publish Docker images
+name: Build and publish Docker images
 
 on:
   workflow_call:
@@ -9,6 +9,21 @@ on:
       version:
         type: string
         required: true
+      # 只检查容器内命令或模块能否运行，不测试上游业务接口
+      check-command:
+        type: string
+        required: true
+      # 默认使用项目目录，需要复用其他目录文件时传入 .
+      context:
+        type: string
+        default: ""
+      # 按 <名称>-<架构> 下载预构建产物到 ./_build
+      build-artifact:
+        type: string
+        default: ""
+      build-contexts:
+        type: string
+        default: ""
       build-args:
         type: string
         default: ""
@@ -18,6 +33,12 @@ on:
       roles:
         type: string
         default: '[""]'
+      upstream-repository:
+        type: string
+        default: ""
+      upstream-version-prefix:
+        type: string
+        default: ""
       publish:
         type: boolean
         default: false
@@ -26,7 +47,11 @@ permissions:
   contents: read
 
 jobs:
+  # 每种架构独立构建和检查，通过后仅推送不可变摘要
   build:
+    permissions:
+      contents: read
+      packages: write
     strategy:
       fail-fast: false
       matrix:
@@ -44,34 +69,24 @@ jobs:
         uses: actions/checkout@v7
         with:
           persist-credentials: false
-      - name: Download WebUI assets and AionCore
-        if: inputs.project == 'aionui'
+      - name: Download build artifact
+        if: inputs.build-artifact != ''
         uses: actions/download-artifact@v8
         with:
-          name: aionui-assets-${{ matrix.arch }}
-          path: _aionui
+          name: ${{ inputs.build-artifact }}-${{ matrix.arch }}
+          path: _build
       - name: Install image transport
         run: sudo apt-get update -qq && sudo apt-get install -y --no-install-recommends skopeo
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@v4
-      - name: Set AionUI build contexts
-        id: contexts
-        if: inputs.project == 'aionui'
-        run: |
-          {
-            echo 'value<<CONTEXTS'
-            echo 'web-assets=./_aionui/web'
-            echo 'core-bin=./_aionui/core'
-            echo 'CONTEXTS'
-          } >> "$GITHUB_OUTPUT"
       - name: Build local OCI image
         uses: docker/build-push-action@v7
         with:
-          context: ${{ inputs.project == 'dev-go' && '.' || format('./{0}', inputs.project) }}
+          context: ${{ inputs.context || format('./{0}', inputs.project) }}
           file: ./${{ inputs.project }}/Dockerfile
           target: ${{ matrix.role }}
           platforms: linux/${{ matrix.arch }}
-          build-contexts: ${{ steps.contexts.outputs.value }}
+          build-contexts: ${{ inputs.build-contexts }}
           build-args: ${{ inputs.build-args }}
           pull: true
           provenance: false
@@ -88,141 +103,39 @@ jobs:
           ARCH: ${{ matrix.arch }}
         run: |
           set -euo pipefail
-          skopeo copy "oci-archive:$RUNNER_TEMP/image.tar" docker-daemon:local/smoke:test
-          test "$(docker image inspect local/smoke:test --format '{{.Os}}/{{.Architecture}}')" = "linux/$ARCH"
-      - name: Smoke test
+          skopeo copy "oci-archive:$RUNNER_TEMP/image.tar" docker-daemon:local/build:check
+          test "$(docker image inspect local/build:check --format '{{.Os}}/{{.Architecture}}')" = "linux/$ARCH"
+      - name: Check runtime
         env:
-          PROJECT: ${{ inputs.project }}
-          ROLE: ${{ matrix.role }}
+          CHECK_COMMAND: ${{ inputs.check-command }}
         run: |
           set -euo pipefail
-          cleanup() {
-            status=$?
-            if (( status != 0 )); then
-              docker logs smoke 2>&1 | sed -E 's/(Initial admin password:).*/\1 [REDACTED]/; /pairing|token=|Token:|Password:/Id' || true
-            fi
-            docker rm -f smoke >/dev/null 2>&1 || true
-          }
-          trap cleanup EXIT
-          case "$PROJECT" in
-            aionui|t3code)
-              case "$PROJECT" in
-                aionui) port=25808 ;;
-                t3code) port=3773 ;;
-              esac
-              docker run -d --name smoke -e AGENT_CLIS=none -e CLI_UPDATE_INTERVAL=0 \
-                -p "127.0.0.1:$port:$port" local/smoke:test >/dev/null
-              deadline=$((SECONDS + 25))
-              until curl -fsS --max-time 1 "http://127.0.0.1:$port/" -o /tmp/smoke.html 2>/dev/null; do
-                test "$(docker inspect -f '{{.State.Running}}' smoke)" = true
-                if (( SECONDS >= deadline )); then
-                  echo '::error::HTTP startup timed out after 25 seconds'
-                  exit 1
-                fi
-                sleep 1
-              done
-              grep -qi '<html' /tmp/smoke.html
-              if [[ "$PROJECT" == aionui ]]; then
-                curl -fsS --max-time 2 "http://127.0.0.1:$port/api/auth/status" | jq -e '.success == true and has("needs_setup")'
-              fi
-              ;;
-            dev-go)
-              docker run -d --name smoke -e AGENT_CLIS=none -e CLI_UPDATE_INTERVAL=0 \
-                -p 127.0.0.1:2222:22 local/smoke:test >/dev/null
-              deadline=$((SECONDS + 25))
-              until ssh-keyscan -T 1 -p 2222 127.0.0.1 >/dev/null 2>&1; do
-                test "$(docker inspect -f '{{.State.Running}}' smoke)" = true
-                if (( SECONDS >= deadline )); then
-                  echo '::error::SSH startup timed out after 25 seconds'
-                  exit 1
-                fi
-                sleep 1
-              done
-              docker exec smoke sh -ec 'python --version; go version; node --version; npm --version; task --version'
-              ;;
-            stratforge)
-              if [[ "$ROLE" == live ]]; then
-                modules='tomlkit, numpy, talib, redis, psycopg2, tqsdk'
-              else
-                modules='tomlkit, numpy, talib, fastapi, pydantic, uvicorn, jinja2, markdown, polars, tqsdk, psycopg2, optuna, scipy, cmaes'
-              fi
-              docker run --rm --entrypoint python local/smoke:test -c "import $modules; print('Runtime imports OK')"
-              ;;
-            *) exit 1 ;;
-          esac
-      - name: Record tested image
+          # 跳过应用入口，避免安装 Agent CLI 或启动外部连接
+          docker run --rm --network none --entrypoint sh local/build:check -ec "$CHECK_COMMAND"
+      # 推送本地已检查的 OCI 产物，不重新构建，也不跨 job 搬运镜像
+      - name: Push checked image by digest
+        if: inputs.publish && github.ref == format('refs/heads/{0}', github.event.repository.default_branch) && github.event_name != 'pull_request'
         env:
+          GH_TOKEN: ${{ github.token }}
           PROJECT: ${{ inputs.project }}
           ROLE: ${{ matrix.role }}
           ARCH: ${{ matrix.arch }}
         run: |
           set -euo pipefail
-          docker image inspect local/smoke:test --format 'Image size: {{.Size}} bytes'
+          image="ghcr.io/${GITHUB_REPOSITORY_OWNER,,}/$PROJECT${ROLE:+-$ROLE}"
           skopeo inspect --raw "oci-archive:$RUNNER_TEMP/image.tar" > "$RUNNER_TEMP/manifest.json"
           digest="sha256:$(sha256sum "$RUNNER_TEMP/manifest.json" | cut -d ' ' -f1)"
-          printf '%s\n' "$digest" > "$RUNNER_TEMP/digest.txt"
-          jq '[.layers[].size] | add' "$RUNNER_TEMP/manifest.json" > "$RUNNER_TEMP/compressed-size.txt"
-          printf '| %s%s | %s | %s | %s |\n' "$PROJECT" "${ROLE:+-$ROLE}" "$ARCH" \
-            "$(docker image inspect local/smoke:test --format '{{.Size}}')" \
-            "$(cat "$RUNNER_TEMP/compressed-size.txt")" >> "$GITHUB_STEP_SUMMARY"
-      - name: Upload tested image
-        uses: actions/upload-artifact@v7
-        with:
-          name: tested-${{ inputs.project }}-${{ matrix.role }}-${{ matrix.arch }}
-          path: |
-            ${{ runner.temp }}/image.tar
-            ${{ runner.temp }}/digest.txt
-            ${{ runner.temp }}/compressed-size.txt
-          if-no-files-found: error
-          compression-level: 0
-          retention-days: 1
-
-  push:
-    needs: build
-    if: inputs.publish && github.ref == format('refs/heads/{0}', github.event.repository.default_branch) && github.event_name != 'pull_request'
-    permissions:
-      contents: read
-      packages: write
-    strategy:
-      fail-fast: false
-      matrix:
-        arch: [amd64, arm64]
-        role: ${{ fromJSON(inputs.roles) }}
-        include:
-          - arch: amd64
-            runner: ubuntu-24.04
-          - arch: arm64
-            runner: ubuntu-24.04-arm
-    runs-on: ${{ matrix.runner }}
-    timeout-minutes: 20
-    steps:
-      - name: Download tested image
-        uses: actions/download-artifact@v8
-        with:
-          name: tested-${{ inputs.project }}-${{ matrix.role }}-${{ matrix.arch }}
-          path: _tested
-      - name: Install image transport
-        run: sudo apt-get update -qq && sudo apt-get install -y --no-install-recommends skopeo
-      - name: Push tested image by digest
-        env:
-          GH_TOKEN: ${{ github.token }}
-          PROJECT: ${{ inputs.project }}
-          ROLE: ${{ matrix.role }}
-        run: |
-          set -euo pipefail
-          image="ghcr.io/${GITHUB_REPOSITORY_OWNER,,}/$PROJECT${ROLE:+-$ROLE}"
-          digest="$(cat _tested/digest.txt)"
-          [[ "$digest" =~ ^sha256:[a-f0-9]{64}$ ]]
-          test "sha256:$(skopeo inspect --raw oci-archive:_tested/image.tar | sha256sum | cut -d ' ' -f1)" = "$digest"
           printf '%s' "$GH_TOKEN" | skopeo login --authfile "$RUNNER_TEMP/auth.json" --username "$GITHUB_ACTOR" --password-stdin ghcr.io
           trap 'rm -f "$RUNNER_TEMP/auth.json"' EXIT
           skopeo copy --authfile "$RUNNER_TEMP/auth.json" --preserve-digests \
-            oci-archive:_tested/image.tar "docker://$image@$digest"
+            "oci-archive:$RUNNER_TEMP/image.tar" "docker://$image@$digest"
           skopeo inspect --authfile "$RUNNER_TEMP/auth.json" --raw "docker://$image@$digest" > "$RUNNER_TEMP/remote.json"
           test "sha256:$(sha256sum "$RUNNER_TEMP/remote.json" | cut -d ' ' -f1)" = "$digest"
           mkdir -p _digests
-          cp _tested/digest.txt "_digests/$PROJECT${ROLE:+-$ROLE}-${{ matrix.arch }}.txt"
+          printf '%s\n' "$digest" > "_digests/$PROJECT${ROLE:+-$ROLE}-$ARCH.txt"
+          printf '%s%s (%s): %s\n' "$PROJECT" "${ROLE:+-$ROLE}" "$ARCH" "$digest" >> "$GITHUB_STEP_SUMMARY"
       - name: Upload verified digest
+        if: inputs.publish && github.ref == format('refs/heads/{0}', github.event.repository.default_branch) && github.event_name != 'pull_request'
         uses: actions/upload-artifact@v7
         with:
           name: digest-${{ inputs.project }}-${{ matrix.role }}-${{ matrix.arch }}
@@ -230,8 +143,10 @@ jobs:
           if-no-files-found: error
           retention-days: 1
 
+  # 全部架构检查通过后，合并版本标签，再更新 latest
   publish:
-    needs: push
+    needs: build
+    if: inputs.publish && github.ref == format('refs/heads/{0}', github.event.repository.default_branch) && github.event_name != 'pull_request'
     permissions:
       contents: read
       packages: write
@@ -267,6 +182,8 @@ jobs:
           ROLE: ${{ matrix.role }}
           VERSION: ${{ inputs.version }}
           BUILD_KEY: ${{ inputs.build-key }}
+          UPSTREAM_REPOSITORY: ${{ inputs.upstream-repository }}
+          UPSTREAM_VERSION_PREFIX: ${{ inputs.upstream-version-prefix }}
         run: |
           set -euo pipefail
           image="ghcr.io/${GITHUB_REPOSITORY_OWNER,,}/$PROJECT${ROLE:+-$ROLE}"
@@ -292,16 +209,10 @@ jobs:
             echo '::notice::Default branch advanced; preserving latest'
             exit 0
           fi
-          case "$PROJECT" in
-            aionui)
-              current="$(gh api repos/iOfficeAI/AionUi/releases/latest --jq .tag_name)"
-              test "${current#v}" = "$VERSION"
-              ;;
-            t3code)
-              current="$(gh api repos/pingdotgg/t3code/releases/latest --jq .tag_name)"
-              test "t3-${current#v}" = "$VERSION"
-              ;;
-          esac
+          if [[ -n "$UPSTREAM_REPOSITORY" ]]; then
+            current="$(gh api "repos/$UPSTREAM_REPOSITORY/releases/latest" --jq .tag_name)"
+            test "${UPSTREAM_VERSION_PREFIX}${current#v}" = "$VERSION"
+          fi
           manifest_digest="sha256:$(sha256sum manifest.json | cut -d ' ' -f1)"
           docker buildx imagetools create --tag "$image:latest" "$image@$manifest_digest"
           docker buildx imagetools inspect "$image:latest" --raw > latest.json
