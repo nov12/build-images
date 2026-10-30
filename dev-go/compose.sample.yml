@@ -1,0 +1,54 @@
+services:
+  dev-go:
+    image: ghcr.io/nov12/dev-go:latest
+    container_name: dev-go
+    restart: unless-stopped
+
+    ports:
+      - "${SSH_PORT:-2222}:22"
+
+    environment:
+      USER_NAME: "${USER_NAME:-apple}"
+      PUID: "${PUID:-1000}"
+      PGID: "${PGID:-1000}"
+      TZ: "${TZ:-Asia/Singapore}"
+
+      # Set an SSH public key, or enable PASSWORD_ACCESS and set USER_PASSWORD
+      PUBLIC_KEY: "${PUBLIC_KEY:-}"
+      PASSWORD_ACCESS: "${PASSWORD_ACCESS:-false}"
+      USER_PASSWORD: "${USER_PASSWORD:-}"
+      SUDO_ACCESS: "${SUDO_ACCESS:-false}"
+
+      # Available CLIs: codex,claude,opencode,gemini,qwen,kimi,copilot,pi,cline,amp
+      # all = install all; none or empty string = install none
+      AGENT_CLIS: "${AGENT_CLIS-codex,claude,opencode}"
+
+      # Update interval in seconds; 0 disables periodic checks
+      # Updates are postponed while the corresponding Agent is running
+      CLI_UPDATE_INTERVAL: "${CLI_UPDATE_INTERVAL:-86400}"
+
+    volumes:
+      # SSH host keys
+      - dev-go-config:/config
+
+      # User configuration and Agent authentication
+      - dev-go-home:/home/${USER_NAME:-apple}
+
+      # Installed Agent CLIs
+      - agent-cli:/opt/agent-cli
+
+      # Go tools and dependency cache
+      - go-data:/go
+
+      # Python dependencies installed with pip install --target=/pythonlib
+      - pythonlib:/pythonlib
+
+      # Project workspace
+      - ./workspace:/workspace
+
+volumes:
+  dev-go-config:
+  dev-go-home:
+  agent-cli:
+  go-data:
+  pythonlib:

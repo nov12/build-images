@@ -1,171 +1,122 @@
-name: dev-go / build
+name: Build dev-go
 
 on:
   workflow_dispatch:
-
-  push:
-    branches:
-      - main
+  pull_request:
     paths:
       - "dev-go/**"
+      - "t3code/entrypoint.sh"
       - ".github/workflows/dev-go.build.yml"
-
-concurrency:
-  group: dev-go-${{ github.ref }}
-  cancel-in-progress: true
-
-env:
-  IMAGE: ghcr.io/nov12/dev-go
+      - ".github/workflows/docker-release.yml"
+  push:
+    branches: [main]
+    paths:
+      - "dev-go/**"
+      - "t3code/entrypoint.sh"
+      - ".github/workflows/dev-go.build.yml"
+      - ".github/workflows/docker-release.yml"
+  schedule:
+    - cron: "43 3 * * 1"
 
 permissions:
   contents: read
   packages: write
 
+concurrency:
+  group: dev-go-${{ github.ref }}
+  cancel-in-progress: false
+
 jobs:
-  prepare:
-    runs-on: ubuntu-26.04
-
+  resolve:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
     outputs:
-      python: ${{ steps.versions.outputs.python }}
-      go: ${{ steps.versions.outputs.go }}
-      node: ${{ steps.versions.outputs.node }}
-
+      version: ${{ steps.resolve.outputs.version }}
+      build: ${{ steps.decision.outputs.build || steps.resolve.outputs.build }}
+      args: ${{ steps.resolve.outputs.args }}
+      build_key: ${{ steps.resolve.outputs.build_key }}
     steps:
       - name: Checkout
         uses: actions/checkout@v7
-
-      - name: Load versions
-        id: versions
-        shell: bash
-        run: |
-          set -euo pipefail
-
-          source dev-go/versions.env
-
-          {
-            echo "python=${PYTHON_VERSION}"
-            echo "go=${GO_VERSION}"
-            echo "node=${NODE_VERSION}"
-          } >> "$GITHUB_OUTPUT"
-
-  build-amd64:
-    needs: prepare
-    runs-on: ubuntu-26.04
-
-    outputs:
-      digest: ${{ steps.build.outputs.digest }}
-
-    steps:
-      - name: Checkout
-        uses: actions/checkout@v7
-
-      - name: Set up Buildx
-        uses: docker/setup-buildx-action@v4
-
-      - name: Login to GHCR
-        uses: docker/login-action@v4
         with:
-          registry: ghcr.io
-          username: ${{ github.actor }}
-          password: ${{ secrets.GITHUB_TOKEN }}
-
-      - name: Build amd64
-        id: build
-        uses: docker/build-push-action@v7
-        with:
-          context: dev-go
-          platforms: linux/amd64
-
-          build-args: |
-            PYTHON_VERSION=${{ needs.prepare.outputs.python }}
-            GO_VERSION=${{ needs.prepare.outputs.go }}
-            NODE_VERSION=${{ needs.prepare.outputs.node }}
-
-          outputs: |
-            type=image,name=${{ env.IMAGE }},push-by-digest=true,name-canonical=true,push=true
-
-          labels: |
-            org.opencontainers.image.source=https://github.com/${{ github.repository }}
-            org.opencontainers.image.revision=${{ github.sha }}
-
-          provenance: false
-
-  build-arm64:
-    needs: prepare
-    runs-on: ubuntu-26.04-arm
-
-    outputs:
-      digest: ${{ steps.build.outputs.digest }}
-
-    steps:
-      - name: Checkout
-        uses: actions/checkout@v7
-
-      - name: Set up Buildx
-        uses: docker/setup-buildx-action@v4
-
-      - name: Login to GHCR
-        uses: docker/login-action@v4
-        with:
-          registry: ghcr.io
-          username: ${{ github.actor }}
-          password: ${{ secrets.GITHUB_TOKEN }}
-
-      - name: Build arm64
-        id: build
-        uses: docker/build-push-action@v7
-        with:
-          context: dev-go
-          platforms: linux/arm64
-
-          build-args: |
-            PYTHON_VERSION=${{ needs.prepare.outputs.python }}
-            GO_VERSION=${{ needs.prepare.outputs.go }}
-            NODE_VERSION=${{ needs.prepare.outputs.node }}
-
-          outputs: |
-            type=image,name=${{ env.IMAGE }},push-by-digest=true,name-canonical=true,push=true
-
-          labels: |
-            org.opencontainers.image.source=https://github.com/${{ github.repository }}
-            org.opencontainers.image.revision=${{ github.sha }}
-
-          provenance: false
-
-  merge:
-    needs:
-      - prepare
-      - build-amd64
-      - build-arm64
-
-    runs-on: ubuntu-26.04
-
-    steps:
-      - name: Set up Buildx
-        uses: docker/setup-buildx-action@v4
-
-      - name: Login to GHCR
-        uses: docker/login-action@v4
-        with:
-          registry: ghcr.io
-          username: ${{ github.actor }}
-          password: ${{ secrets.GITHUB_TOKEN }}
-
-      - name: Create manifest
-        shell: bash
+          persist-credentials: false
+      - name: Resolve stable toolchain versions
+        id: resolve
         env:
-          AMD64_DIGEST: ${{ needs.build-amd64.outputs.digest }}
-          ARM64_DIGEST: ${{ needs.build-arm64.outputs.digest }}
-          GO_VERSION: ${{ needs.prepare.outputs.go }}
+          GH_TOKEN: ${{ github.token }}
         run: |
           set -euo pipefail
-
-          docker buildx imagetools create \
-            --tag "${IMAGE}:latest" \
-            --tag "${IMAGE}:go-${GO_VERSION}" \
-            "${IMAGE}@${AMD64_DIGEST}" \
-            "${IMAGE}@${ARM64_DIGEST}"
-
-      - name: Inspect
+          curl -fsSL --retry 3 --max-time 30 'https://go.dev/dl/?mode=json' > "$RUNNER_TEMP/go.json"
+          GO_VERSION="$(jq -er '
+            [.[] | select(.stable == true) | .version | ltrimstr("go")]
+            | sort_by(split(".") | map(tonumber)) | last
+          ' "$RUNNER_TEMP/go.json")"
+          curl -fsSL --retry 3 --max-time 30 https://nodejs.org/dist/index.json > "$RUNNER_TEMP/node.json"
+          NODE_VERSION="$(jq -er '
+            [.[] | .version | select(test("^v[0-9]+\\.[0-9]+\\.[0-9]+$"))]
+            | sort_by(ltrimstr("v") | split(".") | map(tonumber)) | last | ltrimstr("v")
+          ' "$RUNNER_TEMP/node.json")"
+          curl -fsSL --retry 3 --max-time 30 \
+            'https://www.python.org/api/v2/downloads/release/?is_published=true&pre_release=false' > "$RUNNER_TEMP/python.json"
+          PYTHON_VERSION="$(jq -er '
+            [.[] | select(.is_published == true and .pre_release == false)
+              | .name | sub("^Python "; "") | select(test("^[0-9]+\\.[0-9]+\\.[0-9]+$"))]
+            | sort_by(split(".") | map(tonumber)) | last
+          ' "$RUNNER_TEMP/python.json")"
+          task_version="$(gh api repos/go-task/task/releases/latest --jq .tag_name)"
+          for version in "$GO_VERSION" "$NODE_VERSION" "$PYTHON_VERSION" "${task_version#v}"; do
+            [[ "$version" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]
+          done
+          build_key="$(
+            {
+              printf '%s\n' "$PYTHON_VERSION" "$GO_VERSION" "$NODE_VERSION" "$task_version"
+              sha256sum dev-go/Dockerfile dev-go/entrypoint.sh t3code/entrypoint.sh \
+                .github/workflows/dev-go.build.yml .github/workflows/docker-release.yml
+            } | sha256sum | cut -d ' ' -f1
+          )"
+          {
+            echo 'args<<BUILD_ARGS'
+            echo "PYTHON_VERSION=$PYTHON_VERSION"
+            echo "GO_VERSION=$GO_VERSION"
+            echo "NODE_VERSION=$NODE_VERSION"
+            echo "TASK_VERSION=$task_version"
+            echo 'BUILD_ARGS'
+            echo "version=go-$GO_VERSION"
+            echo "build_key=$build_key"
+            echo 'build=true'
+          } >> "$GITHUB_OUTPUT"
+          printf 'Resolved Go %s, Node %s, Python %s, Task %s\n' "$GO_VERSION" "$NODE_VERSION" "$PYTHON_VERSION" "$task_version"
+      - name: Login for release lookup
+        if: github.event_name == 'schedule'
+        uses: docker/login-action@v4
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ github.token }}
+      - name: Skip unchanged multi-platform release
+        id: decision
+        if: github.event_name == 'schedule'
+        env:
+          VERSION: ${{ steps.resolve.outputs.version }}
+          BUILD_KEY: ${{ steps.resolve.outputs.build_key }}
         run: |
-          docker buildx imagetools inspect "${IMAGE}:latest"
+          set -euo pipefail
+          image="ghcr.io/${GITHUB_REPOSITORY_OWNER,,}/dev-go"
+          if docker buildx imagetools inspect "$image:$VERSION" --raw > manifest.json 2>/dev/null && \
+             jq -e --arg key "$BUILD_KEY" '
+               .annotations["io.build-images.build-key"] == $key and
+               ([.manifests[] | .platform | "\(.os)/\(.architecture)"] | sort == ["linux/amd64", "linux/arm64"])
+             ' manifest.json; then
+            echo 'build=false' >> "$GITHUB_OUTPUT"
+          fi
+
+  release:
+    needs: resolve
+    if: needs.resolve.outputs.build == 'true'
+    uses: ./.github/workflows/docker-release.yml
+    with:
+      project: dev-go
+      version: ${{ needs.resolve.outputs.version }}
+      build-args: ${{ needs.resolve.outputs.args }}
+      build-key: ${{ needs.resolve.outputs.build_key }}
+      publish: ${{ github.event_name != 'pull_request' && github.ref == format('refs/heads/{0}', github.event.repository.default_branch) }}
