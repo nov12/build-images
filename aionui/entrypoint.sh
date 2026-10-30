@@ -228,7 +228,7 @@ update_all() {
       qwen) update_npm qwen '@qwen-code/qwen-code' ;;
       kimi) update_npm kimi '@moonshot-ai/kimi-code' ;;
       copilot) update_npm copilot '@github/copilot' ;;
-      pi) update_npm pi '@mariozechner/pi-coding-agent' ;;
+      pi) update_npm pi '@earendil-works/pi-coding-agent' ;;
       cline) update_npm cline 'cline' ;;
       amp) update_npm amp '@ampcode/cli' ;;
       agy) update_agy ;;

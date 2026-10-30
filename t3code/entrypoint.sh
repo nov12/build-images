@@ -199,7 +199,7 @@ update_all() {
       qwen) update_one qwen '@qwen-code/qwen-code' ;;
       kimi) update_one kimi '@moonshot-ai/kimi-code' ;;
       copilot) update_one copilot '@github/copilot' ;;
-      pi) update_one pi '@mariozechner/pi-coding-agent' ;;
+      pi) update_one pi '@earendil-works/pi-coding-agent' ;;
       cline) update_one cline 'cline' ;;
       amp) update_one amp '@ampcode/cli' ;;
       *) log "$agent: unsupported, skipping" ;;
