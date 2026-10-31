@@ -13,8 +13,13 @@ services:
       # Set a strong password in .env before starting; required for remote access
       PASEO_PASSWORD: "${PASEO_PASSWORD:?Set PASEO_PASSWORD in .env before starting Paseo}"
 
-      # Add DNS names used to reach Paseo; IPs and localhost are allowed by default
-      # PASEO_HOSTNAMES: "paseo.example.com,.lan"
+      # Required for DNS/reverse proxy access; missing names cause 403 Invalid Host header
+      # Replace these official example names with your own comma-separated DNS names
+      # IPs and localhost are also allowed by default
+      PASEO_HOSTNAMES: "paseo.example.com,.lan"
+
+      # Reverse proxy: use HTTPS outside localhost and forward WebSocket upgrades
+      # After environment changes, recreate the container with docker compose up -d
 
       # Optional: disable the public relay when using direct connections only
       # PASEO_RELAY_ENABLED: "false"
