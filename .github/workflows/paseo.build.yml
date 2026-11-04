@@ -5,14 +5,16 @@ on:
   pull_request:
     paths:
       - "paseo/**"
-      - "t3code/entrypoint.sh"
+      - "common/**"
+      - ".dockerignore"
       - ".github/workflows/paseo.build.yml"
       - ".github/workflows/docker-release.yml"
   push:
     branches: [main]
     paths:
       - "paseo/**"
-      - "t3code/entrypoint.sh"
+      - "common/**"
+      - ".dockerignore"
       - ".github/workflows/paseo.build.yml"
       - ".github/workflows/docker-release.yml"
   schedule:
@@ -42,6 +44,8 @@ jobs:
           persist-credentials: false
       - name: Check startup script syntax
         run: |
+          find common -type f -name '*.sh' -print0 | xargs -0 -r -n 1 bash -n
+          bash common/check.sh
           bash -n paseo/entrypoint.sh
           node --check paseo/plugins.mjs
       - name: Resolve stable release
@@ -57,7 +61,8 @@ jobs:
           build_key="$(
             {
               printf '%s\n' "$version"
-              sha256sum paseo/Dockerfile paseo/entrypoint.sh paseo/plugins.mjs t3code/entrypoint.sh \
+              find common -type f -print0 | LC_ALL=C sort -z | xargs -0 sha256sum
+              sha256sum .dockerignore paseo/Dockerfile paseo/entrypoint.sh paseo/plugins.mjs \
                 .github/workflows/paseo.build.yml .github/workflows/docker-release.yml
             } | sha256sum | cut -d ' ' -f1
           )"
@@ -97,7 +102,10 @@ jobs:
     uses: ./.github/workflows/docker-release.yml
     with:
       project: paseo
-      check-command: paseo --version
+      check-command: |
+        find /usr/local/lib/container-common -type f -name '*.sh' -print0 | xargs -0 -r -n 1 bash -n
+        bash -n /usr/local/lib/paseo/entrypoint.sh
+        AGENT_CLIS=none PASEO_PLUGINS=none CLI_UPDATE_INTERVAL=0 /usr/local/lib/paseo/entrypoint.sh paseo --version
       context: .
       upstream-repository: getpaseo/paseo
       upstream-version-prefix: paseo-

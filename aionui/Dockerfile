@@ -24,6 +24,7 @@ RUN apt-get update \
         curl \
         findutils \
         git \
+        jq \
         gzip \
         libatomic1 \
         libicu76 \
@@ -66,8 +67,8 @@ COPY --from=core-bin --chmod=755 /aioncore /usr/local/bin/aioncore
 # 仅复制静态资源，不引入 Electron、源码及 node_modules
 COPY --from=web-assets /renderer/ /app/out/renderer/
 
-# 保留现有 Coding Agent CLI 管理方式
-COPY --chmod=755 entrypoint.sh /usr/local/bin/entrypoint.sh
+COPY --chmod=755 common/ /usr/local/lib/container-common/
+COPY --chmod=755 aionui/entrypoint.sh /usr/local/bin/entrypoint.sh
 
 ENV HOME=/home/node \
     NODE_ENV=production \
@@ -78,6 +79,7 @@ ENV HOME=/home/node \
     AIONUI_STATIC_DIR=/app/out/renderer \
     AIONUI_BACKEND_BIN=/usr/local/bin/aioncore \
     AGENT_CLI_ROOT=/home/node/.local \
+    AGENT_CLI_ALL_EXTRA=agy \
     CLI_UPDATE_INTERVAL=86400
 
 # 构建期检查关键二进制及最终运行产物
@@ -98,4 +100,4 @@ EXPOSE 25808
 
 ENTRYPOINT ["/usr/bin/tini", "--", "/usr/local/bin/entrypoint.sh"]
 
-CMD ["bun", "/app/scripts/webui.js", "--remote"]
+CMD ["/usr/local/bin/bun", "/app/scripts/webui.js", "--remote"]
