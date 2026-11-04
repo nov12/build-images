@@ -91,6 +91,9 @@ if ! id "$USER_NAME" >/dev/null 2>&1; then
 fi
 
 HOME_DIR="$(getent passwd "$USER_NAME" | cut -d: -f6)"
+EXTRA_TOOLS_HOME="${EXTRA_TOOLS_HOME:-${CONTAINER_TOOLS_HOME:-$HOME_DIR/.local/share/extra-tools}}"
+export EXTRA_TOOLS_HOME
+export PATH="$AGENT_CLI_ROOT/bin:$EXTRA_TOOLS_HOME/bin:$PATH"
 
 # 设置目录归属
 chown "$PUID:$PGID" "$HOME_DIR" /go /pythonlib /workspace
@@ -192,8 +195,12 @@ case "${AGENT_CLIS-codex,claude,opencode}" in
   *)
     install -d -o "$PUID" -g "$PGID" \
       "$AGENT_CLI_ROOT" "$AGENT_CLI_ROOT/bin" "$AGENT_CLI_ROOT/releases"
-    runuser -u "$USER_NAME" -- /usr/local/bin/agent-cli sleep infinity &
     ;;
 esac
+
+runuser -u "$USER_NAME" -- bash -ec '
+  source /usr/local/lib/container-common/init.sh
+  common_run_updates
+' &
 
 exec "$@"

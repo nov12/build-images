@@ -5,14 +5,16 @@ on:
   pull_request:
     paths:
       - "dev-go/**"
-      - "t3code/entrypoint.sh"
+      - "common/**"
+      - ".dockerignore"
       - ".github/workflows/dev-go.build.yml"
       - ".github/workflows/docker-release.yml"
   push:
     branches: [main]
     paths:
       - "dev-go/**"
-      - "t3code/entrypoint.sh"
+      - "common/**"
+      - ".dockerignore"
       - ".github/workflows/dev-go.build.yml"
       - ".github/workflows/docker-release.yml"
   schedule:
@@ -40,6 +42,11 @@ jobs:
         uses: actions/checkout@v7
         with:
           persist-credentials: false
+      - name: Check startup script syntax
+        run: |
+          find common -type f -name '*.sh' -print0 | xargs -0 -r -n 1 bash -n
+          bash common/check.sh
+          sh -n dev-go/entrypoint.sh
       - name: Resolve stable toolchain versions
         id: resolve
         env:
@@ -70,7 +77,8 @@ jobs:
           build_key="$(
             {
               printf '%s\n' "$PYTHON_VERSION" "$GO_VERSION" "$NODE_VERSION" "$task_version"
-              sha256sum dev-go/Dockerfile dev-go/entrypoint.sh t3code/entrypoint.sh \
+              find common -type f -print0 | LC_ALL=C sort -z | xargs -0 sha256sum
+              sha256sum .dockerignore dev-go/Dockerfile dev-go/entrypoint.sh \
                 .github/workflows/dev-go.build.yml .github/workflows/docker-release.yml
             } | sha256sum | cut -d ' ' -f1
           )"
@@ -116,7 +124,10 @@ jobs:
     uses: ./.github/workflows/docker-release.yml
     with:
       project: dev-go
-      check-command: python --version; go version; node --version; npm --version; task --version
+      check-command: |
+        find /usr/local/lib/container-common -type f -name '*.sh' -print0 | xargs -0 -r -n 1 bash -n
+        sh -n /usr/local/bin/entrypoint
+        AGENT_CLIS=none CLI_UPDATE_INTERVAL=0 /usr/local/lib/container-common/entrypoint.sh sh -ec 'python --version; go version; node --version; npm --version; task --version'
       context: .
       version: ${{ needs.resolve.outputs.version }}
       build-args: ${{ needs.resolve.outputs.args }}

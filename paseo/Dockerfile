@@ -43,16 +43,20 @@ RUN apt-get update \
         curl \
         findutils \
         git \
+        jq \
         gzip \
         lbzip2 \
         libatomic1 \
         libgomp1 \
+        libicu76 \
+        libssl3t64 \
         openssh-client \
         procps \
         ripgrep \
         tar \
         tini \
         unzip \
+        util-linux \
     && rm -rf /var/lib/apt/lists/*
 
 # 复用基础镜像的非 root 用户，默认 UID/GID 为 1000:1000
@@ -71,7 +75,7 @@ RUN set -eux; \
 COPY --from=paseo-builder /opt/paseo/ /opt/paseo/
 
 # 使用仓库根目录作为构建上下文，直接复用已有 Agent CLI 管理入口
-COPY --chmod=755 t3code/entrypoint.sh /usr/local/bin/entrypoint.sh
+COPY --chmod=755 common/ /usr/local/lib/container-common/
 COPY --chmod=755 paseo/entrypoint.sh /usr/local/lib/paseo/entrypoint.sh
 COPY paseo/plugins.mjs /usr/local/lib/paseo/plugins.mjs
 
@@ -85,8 +89,7 @@ ENV HOME=/home/node \
     PASEO_WEB_UI_ENABLED=true \
     PASEO_LOG_FORMAT=json \
     PASEO_LOG_LEVEL=info \
-    CLI_UPDATE_INTERVAL=86400 \
-    NPM_CONFIG_CACHE=/tmp/t3-agent-npm-cache
+    CLI_UPDATE_INTERVAL=86400
 
 USER node
 
@@ -94,6 +97,6 @@ WORKDIR /workspace
 
 EXPOSE 6767
 
-ENTRYPOINT ["/usr/bin/tini", "-g", "--", "/usr/local/bin/entrypoint.sh"]
+ENTRYPOINT ["/usr/bin/tini", "-g", "--", "/usr/local/lib/paseo/entrypoint.sh"]
 
-CMD ["/usr/local/lib/paseo/entrypoint.sh", "node", "/opt/paseo/node_modules/@getpaseo/server/dist/scripts/supervisor-entrypoint.js"]
+CMD ["/usr/local/bin/node", "/opt/paseo/node_modules/@getpaseo/server/dist/scripts/supervisor-entrypoint.js"]

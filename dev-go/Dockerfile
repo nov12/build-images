@@ -44,6 +44,7 @@ RUN set -eux; \
         ca-certificates \
         curl \
         git \
+        jq \
         libatomic1 \
         libbz2-1.0 \
         libdb5.3t64 \
@@ -51,6 +52,7 @@ RUN set -eux; \
         libffi8 \
         libgdbm6t64 \
         libgdbm-compat4t64 \
+        libicu76 \
         liblzma5 \
         libncursesw6 \
         libreadline8t64 \
@@ -108,7 +110,7 @@ RUN set -eux; \
     rm -f /etc/ssh/ssh_host_*
 
 # 使用仓库根目录作为构建上下文，复用已有 Agent CLI 管理入口
-COPY --chmod=755 t3code/entrypoint.sh /usr/local/bin/agent-cli
+COPY --chmod=755 common/ /usr/local/lib/container-common/
 COPY --chmod=755 dev-go/entrypoint.sh /usr/local/bin/entrypoint
 
 WORKDIR /workspace
