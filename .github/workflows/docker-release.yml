@@ -117,7 +117,7 @@ jobs:
         run: |
           set -euo pipefail
           # 跳过应用入口，避免安装 Agent CLI 或启动外部连接
-          docker run --rm --network none --entrypoint sh local/build:check -ec "$CHECK_COMMAND"
+          docker run --rm --network none --entrypoint /usr/bin/env local/build:check -u LD_PRELOAD sh -ec "$CHECK_COMMAND"
       - name: Check numeric users
         if: inputs.check-numeric-user
         env:
@@ -126,7 +126,7 @@ jobs:
           set -euo pipefail
           container=''
           trap '[[ -z "$container" ]] || { docker logs "$container"; docker rm -f "$container"; }' EXIT
-          default_user="$(docker run --rm --entrypoint sh local/build:check -c 'printf "%s:%s" "$(id -u)" "$(id -g)"')"
+          default_user="$(docker run --rm --entrypoint /usr/bin/env local/build:check -u LD_PRELOAD sh -c 'printf "%s:%s" "$(id -u)" "$(id -g)"')"
           for run_as in "$default_user" 12345:23456 23456:12345; do
             uid="${run_as%:*}" gid="${run_as#*:}"
             # 使用当前用户可写的临时目录，不修改持久卷属主。

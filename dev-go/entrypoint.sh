@@ -253,4 +253,7 @@ runuser -u "$USER_NAME" -- bash -ec '
 
 export LD_PRELOAD="$nss_preload" NSS_WRAPPER_PASSWD="$nss_passwd" NSS_WRAPPER_GROUP="$nss_group"
 common_prepare_user
-exec env -u LD_PRELOAD -u NSS_WRAPPER_PASSWD -u NSS_WRAPPER_GROUP "$@"
+if [[ "$1" == /usr/sbin/sshd ]]; then
+  exec env -u LD_PRELOAD -u NSS_WRAPPER_PASSWD -u NSS_WRAPPER_GROUP "$@"
+fi
+exec "$@"
