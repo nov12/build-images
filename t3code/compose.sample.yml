@@ -4,7 +4,7 @@ services:
     container_name: t3code
     restart: unless-stopped
 
-    user: "${PUID:-1000}:${PGID:-1000}"
+    user: "${PUID:-666}:${PGID:-666}"
 
     ports:
       - "3773:3773"

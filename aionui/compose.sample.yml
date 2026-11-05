@@ -5,7 +5,7 @@ services:
     hostname: aionui
     restart: unless-stopped
 
-    user: "${PUID:-1000}:${PGID:-1000}"
+    user: "${PUID:-666}:${PGID:-666}"
 
     ports:
       - "25808:25808"

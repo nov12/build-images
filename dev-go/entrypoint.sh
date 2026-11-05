@@ -1,12 +1,15 @@
-#!/bin/sh
-set -eu
+#!/usr/bin/env bash
+set -Eeuo pipefail
+
+if (( $# == 0 )); then
+  echo 'Usage: entrypoint command [args...]' >&2
+  exit 64
+fi
 
 # 设置环境
 USER_NAME="${USER_NAME:-apple}"
-PUID="${PUID:-1000}"
-PGID="${PGID:-1000}"
 
-TZ="${TZ:-Asia/Singapore}"
+export TZ="${TZ:-Asia/Singapore}"
 
 PASSWORD_ACCESS="${PASSWORD_ACCESS:-false}"
 USER_PASSWORD="${USER_PASSWORD:-}"
@@ -24,21 +27,76 @@ AGENT_CLI_ROOT="${AGENT_CLI_ROOT:-/opt/agent-cli}"
 export AGENT_CLI_ROOT
 export PATH="$AGENT_CLI_ROOT/bin:$PATH"
 
+source /usr/local/lib/container-common/init.sh
+if [[ "$1" == sshd ]]; then shift; set -- /usr/sbin/sshd "$@"; fi
+
+if [[ "$(id -u)" != 0 ]]; then
+  # 数字用户没有系统家目录时，使用镜像的默认用户目录。
+  if [[ "${HOME:-/}" == / || "$HOME" == /root ]]; then
+    export HOME="/home/$USER_NAME"
+  fi
+  if [[ "$1" != /usr/sbin/sshd ]]; then
+    common_initialize
+    exec "$@"
+  fi
+  common_prepare_user "$USER_NAME"
+  if [[ "$PASSWORD_ACCESS" != false || "$SUDO_ACCESS" != false ]]; then
+    echo '[error] Password and sudo setup require root; numeric-user SSH uses public keys' >&2
+    exit 1
+  fi
+  SSH_LISTEN_PORT="${SSH_LISTEN_PORT:-22}"
+  mkdir -p "$SSH_CONFIG_DIR" "$HOME/.ssh"
+  chmod 700 "$HOME/.ssh"
+  if [[ -n "$PUBLIC_KEY" ]]; then
+    printf '%s\n' "$PUBLIC_KEY" > "$HOME/.ssh/authorized_keys"
+    chmod 600 "$HOME/.ssh/authorized_keys"
+  fi
+  for TYPE in ed25519 rsa; do
+    KEY="$SSH_CONFIG_DIR/ssh_host_${TYPE}_key"
+    if [[ ! -f "$KEY" ]]; then
+      ssh-keygen -q -N '' -t "$TYPE" -f "$KEY"
+    fi
+  done
+  EXTRA_TOOLS_HOME="${EXTRA_TOOLS_HOME:-${CONTAINER_TOOLS_HOME:-$HOME/.local/share/extra-tools}}"
+  export EXTRA_TOOLS_HOME
+  export PATH="$AGENT_CLI_ROOT/bin:$EXTRA_TOOLS_HOME/bin:$PATH"
+  # 无需系统账户、PAM 或特权切换；SSH 登录后仍使用当前 UID/GID。
+  SSHD_CONFIG="$SSH_CONFIG_DIR/sshd_config"
+  cat > "$SSHD_CONFIG" <<CONFIG
+Port $SSH_LISTEN_PORT
+HostKey "$SSH_CONFIG_DIR/ssh_host_ed25519_key"
+HostKey "$SSH_CONFIG_DIR/ssh_host_rsa_key"
+PidFile "$SSH_CONFIG_DIR/sshd.pid"
+UsePAM no
+PasswordAuthentication no
+KbdInteractiveAuthentication no
+PermitRootLogin no
+PubkeyAuthentication yes
+AuthorizedKeysFile .ssh/authorized_keys
+AllowUsers $USER_NAME
+Subsystem sftp internal-sftp
+CONFIG
+  printf 'SetEnv' >> "$SSHD_CONFIG"
+  for variable in PATH AGENT_CLI_ROOT EXTRA_TOOLS_HOME GOPATH GOTOOLCHAIN PYTHONPATH PYTHONDONTWRITEBYTECODE PIP_DISABLE_PIP_VERSION_CHECK PIP_NO_CACHE_DIR LD_PRELOAD NSS_WRAPPER_PASSWD NSS_WRAPPER_GROUP; do
+    [[ -v "$variable" ]] || continue
+    value="${!variable}"
+    value="${value//\\/\\\\}"
+    value="${value//\"/\\\"}"
+    printf ' "%s=%s"' "$variable" "$value" >> "$SSHD_CONFIG"
+  done
+  printf '\n' >> "$SSHD_CONFIG"
+  /usr/sbin/sshd -t -f "$SSHD_CONFIG"
+  common_run_updates &
+  exec "$@" -f "$SSHD_CONFIG"
+fi
+
+# 系统账户准备期间使用真实用户表，避免 NSS 快照影响 useradd/runuser。
+nss_preload="${LD_PRELOAD:-}"
+nss_passwd="${NSS_WRAPPER_PASSWD:-}"
+nss_group="${NSS_WRAPPER_GROUP:-}"
+unset LD_PRELOAD NSS_WRAPPER_PASSWD NSS_WRAPPER_GROUP
+
 # 验证参数
-case "$PUID" in
-  '' | *[!0-9]*)
-    echo "[error] Invalid PUID: $PUID"
-    exit 1
-    ;;
-esac
-
-case "$PGID" in
-  '' | *[!0-9]*)
-    echo "[error] Invalid PGID: $PGID"
-    exit 1
-    ;;
-esac
-
 case "$PASSWORD_ACCESS" in
   true | false) ;;
   *)
@@ -69,34 +127,24 @@ mkdir -p \
   "$SSH_CONFIG_DIR" \
   "$SSHD_CONFIG_DIR"
 
-# 设置用户组
-if ! getent group "$PGID" >/dev/null 2>&1; then
-  groupadd \
-    --gid "$PGID" \
-    "$USER_NAME"
-
-  echo "[init] Created group: $USER_NAME ($PGID)"
-fi
-
-# 设置用户
+# 默认 SSH 登录账户固定为 666:666；Compose 指定的非 root 用户走上面的分支。
 if ! id "$USER_NAME" >/dev/null 2>&1; then
-  useradd \
-    --create-home \
-    --uid "$PUID" \
-    --gid "$PGID" \
-    --shell /bin/bash \
-    "$USER_NAME"
-
-  echo "[init] Created user: $USER_NAME ($PUID:$PGID)"
+  if ! getent group 666 >/dev/null 2>&1; then
+    groupadd --gid 666 "$USER_NAME"
+  fi
+  useradd --create-home --uid 666 --gid 666 --shell /bin/bash "$USER_NAME"
+  echo "[init] Created user: $USER_NAME"
 fi
 
+USER_UID="$(id -u "$USER_NAME")"
+USER_GID="$(id -g "$USER_NAME")"
 HOME_DIR="$(getent passwd "$USER_NAME" | cut -d: -f6)"
 EXTRA_TOOLS_HOME="${EXTRA_TOOLS_HOME:-${CONTAINER_TOOLS_HOME:-$HOME_DIR/.local/share/extra-tools}}"
 export EXTRA_TOOLS_HOME
 export PATH="$AGENT_CLI_ROOT/bin:$EXTRA_TOOLS_HOME/bin:$PATH"
 
 # 设置目录归属
-chown "$PUID:$PGID" "$HOME_DIR" /go /pythonlib /workspace
+chown "$USER_UID:$USER_GID" "$HOME_DIR" /go /pythonlib /workspace
 
 # 设置用户密码
 if [ -n "$USER_PASSWORD" ]; then
@@ -124,7 +172,7 @@ if [ -n "$PUBLIC_KEY" ]; then
   echo "[init] SSH public key configured"
 fi
 
-chown -R "$PUID:$PGID" "$HOME_DIR/.ssh"
+chown -R "$USER_UID:$USER_GID" "$HOME_DIR/.ssh"
 
 # 配置 sudo
 SUDOERS_FILE="/etc/sudoers.d/$USER_NAME"
@@ -160,7 +208,7 @@ done
 
 # SSH 服务器配置
 cat >"$SSHD_CONFIG" <<EOF
-Port 22
+Port ${SSH_LISTEN_PORT:-22}
 
 PermitRootLogin no
 PermitEmptyPasswords no
@@ -183,9 +231,9 @@ chmod 644 "$SSHD_CONFIG"
 
 # 输出启动配置
 echo "[init] User: $USER_NAME"
-echo "[init] UID:GID: $PUID:$PGID"
+echo "[init] UID:GID: $USER_UID:$USER_GID"
 echo "[init] Timezone: $TZ"
-echo "[init] SSH port: 22"
+echo "[init] SSH port: ${SSH_LISTEN_PORT:-22}"
 echo "[init] Password authentication: $PASSWORD_AUTH"
 echo "[init] sudo: $SUDO_ACCESS"
 
@@ -193,7 +241,7 @@ echo "[init] sudo: $SUDO_ACCESS"
 case "${AGENT_CLIS-codex,claude,opencode}" in
   '' | none) ;;
   *)
-    install -d -o "$PUID" -g "$PGID" \
+    install -d -o "$USER_UID" -g "$USER_GID" \
       "$AGENT_CLI_ROOT" "$AGENT_CLI_ROOT/bin" "$AGENT_CLI_ROOT/releases"
     ;;
 esac
@@ -203,4 +251,6 @@ runuser -u "$USER_NAME" -- bash -ec '
   common_run_updates
 ' &
 
-exec "$@"
+export LD_PRELOAD="$nss_preload" NSS_WRAPPER_PASSWD="$nss_passwd" NSS_WRAPPER_GROUP="$nss_group"
+common_prepare_user
+exec env -u LD_PRELOAD -u NSS_WRAPPER_PASSWD -u NSS_WRAPPER_GROUP "$@"

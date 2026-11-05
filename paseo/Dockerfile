@@ -31,8 +31,8 @@ RUN set -eux; \
 # 运行环境
 FROM node:24-trixie-slim
 
-ARG USER_UID=1000
-ARG USER_GID=1000
+ARG USER_UID=666
+ARG USER_GID=666
 
 # 仅保留 Paseo、终端和共用 Agent CLI 管理脚本所需组件
 RUN apt-get update \
@@ -49,6 +49,7 @@ RUN apt-get update \
         libatomic1 \
         libgomp1 \
         libicu76 \
+        libnss-wrapper \
         libssl3t64 \
         openssh-client \
         procps \
@@ -59,7 +60,7 @@ RUN apt-get update \
         util-linux \
     && rm -rf /var/lib/apt/lists/*
 
-# 复用基础镜像的非 root 用户，默认 UID/GID 为 1000:1000
+# 复用基础镜像的非 root 用户，默认 UID/GID 为 666:666
 RUN set -eux; \
     if ! getent group "$USER_GID" >/dev/null; then \
         groupadd -g "$USER_GID" agent; \
@@ -91,12 +92,16 @@ ENV HOME=/home/node \
     PASEO_LOG_LEVEL=info \
     CLI_UPDATE_INTERVAL=86400
 
+ENV LD_PRELOAD=libnss_wrapper.so \
+    NSS_WRAPPER_PASSWD=/tmp/container-user/passwd \
+    NSS_WRAPPER_GROUP=/tmp/container-user/group
+
 USER node
 
 WORKDIR /workspace
 
 EXPOSE 6767
 
-ENTRYPOINT ["/usr/bin/tini", "-g", "--", "/usr/local/lib/paseo/entrypoint.sh"]
+ENTRYPOINT ["/usr/bin/tini", "-g", "--", "/usr/bin/env", "-u", "LD_PRELOAD", "/usr/local/lib/paseo/entrypoint.sh"]
 
 CMD ["/usr/local/bin/node", "/opt/paseo/node_modules/@getpaseo/server/dist/scripts/supervisor-entrypoint.js"]

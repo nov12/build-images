@@ -41,9 +41,9 @@ FROM python:${PYTHON_VERSION}-slim-trixie AS runtime
 
 ARG TZ
 
-# 非 root 用户默认 UID/GID 为 1000:1000
-ARG APP_UID=1000
-ARG APP_GID=1000
+# 非 root 用户默认 UID/GID 为 666:666
+ARG APP_UID=666
+ARG APP_GID=666
 
 # 基础镜像已包含 CA 证书和时区数据，仅创建用户及挂载目录
 RUN set -eux; \

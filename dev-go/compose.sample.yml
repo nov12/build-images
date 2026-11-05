@@ -9,8 +9,6 @@ services:
 
     environment:
       USER_NAME: "${USER_NAME:-apple}"
-      PUID: "${PUID:-1000}"
-      PGID: "${PGID:-1000}"
       TZ: "${TZ:-Asia/Singapore}"
 
       # Set an SSH public key, or enable PASSWORD_ACCESS and set USER_PASSWORD

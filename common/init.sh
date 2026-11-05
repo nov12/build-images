@@ -1,5 +1,7 @@
 #!/usr/bin/env bash
 
+source "${BASH_SOURCE[0]%/*}/user.sh"
+
 source "${BASH_SOURCE[0]%/*}/agent-cli.sh"
 
 source "${BASH_SOURCE[0]%/*}/extra-tools.sh"
@@ -29,6 +31,7 @@ common_update_loop() {
 
 common_initialize() {
   [[ "${COMMON_INITIALIZED_PID:-}" == "$BASHPID" ]] && return 0
+  common_prepare_user || return
   agent_cli_initialize || return
   common_update_once
   if common_updates_enabled; then
@@ -40,6 +43,7 @@ common_initialize() {
 }
 
 common_run_updates() {
+  common_prepare_user || return
   agent_cli_initialize || return
   common_update_once
   local tools_pid=''

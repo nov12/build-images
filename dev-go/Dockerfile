@@ -55,6 +55,7 @@ RUN set -eux; \
         libicu76 \
         liblzma5 \
         libncursesw6 \
+        libnss-wrapper \
         libreadline8t64 \
         libsqlite3-0 \
         libssl3t64 \
@@ -113,10 +114,14 @@ RUN set -eux; \
 COPY --chmod=755 common/ /usr/local/lib/container-common/
 COPY --chmod=755 dev-go/entrypoint.sh /usr/local/bin/entrypoint
 
+ENV LD_PRELOAD=libnss_wrapper.so \
+    NSS_WRAPPER_PASSWD=/tmp/container-user/passwd \
+    NSS_WRAPPER_GROUP=/tmp/container-user/group
+
 WORKDIR /workspace
 
 EXPOSE 22
 
-ENTRYPOINT ["/usr/bin/tini", "-g", "--", "/usr/local/bin/entrypoint"]
+ENTRYPOINT ["/usr/bin/tini", "-g", "--", "/usr/bin/env", "-u", "LD_PRELOAD", "/usr/local/bin/entrypoint"]
 
 CMD ["/usr/sbin/sshd", "-D", "-e"]

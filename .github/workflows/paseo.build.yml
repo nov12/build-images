@@ -100,6 +100,7 @@ jobs:
     uses: ./.github/workflows/docker-release.yml
     with:
       project: paseo
+      check-numeric-user: true
       check-command: |
         find /usr/local/lib/container-common -type f -name '*.sh' -print0 | xargs -0 -r -n 1 bash -n
         bash -n /usr/local/lib/paseo/entrypoint.sh

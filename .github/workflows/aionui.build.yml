@@ -232,6 +232,7 @@ jobs:
     uses: ./.github/workflows/docker-release.yml
     with:
       project: aionui
+      check-numeric-user: true
       context: .
       check-command: |
         find /usr/local/lib/container-common -type f -name '*.sh' -print0 | xargs -0 -r -n 1 bash -n

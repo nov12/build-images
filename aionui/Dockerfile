@@ -12,8 +12,8 @@ RUN test -s /tmp/webui.js \
 FROM node:24-trixie-slim AS runtime
 
 ARG AIONCORE_NODE_VERSION
-ARG USER_UID=1000
-ARG USER_GID=1000
+ARG USER_UID=666
+ARG USER_GID=666
 
 # 仅安装 AionCore、Agent CLI 和入口脚本必需的系统组件
 RUN apt-get update \
@@ -28,6 +28,7 @@ RUN apt-get update \
         gzip \
         libatomic1 \
         libicu76 \
+        libnss-wrapper \
         libssl3t64 \
         libsqlite3-0 \
         libudev1 \
@@ -44,7 +45,7 @@ RUN test -n "$AIONCORE_NODE_VERSION" \
     && mkdir -p /usr/local/share/aionui \
     && printf '%s\n' "$AIONCORE_NODE_VERSION" > /usr/local/share/aionui/managed-node-version
 
-# 配置非 root 用户，默认 UID/GID 为 1000:1000
+# 配置非 root 用户，默认 UID/GID 为 666:666
 RUN set -eux; \
     if ! getent group "$USER_GID" >/dev/null; then \
         groupadd -g "$USER_GID" agent; \
@@ -92,12 +93,16 @@ RUN aioncore --help >/dev/null \
     && test ! -e /app/node_modules \
     && test ! -e /app/packages
 
+ENV LD_PRELOAD=libnss_wrapper.so \
+    NSS_WRAPPER_PASSWD=/tmp/container-user/passwd \
+    NSS_WRAPPER_GROUP=/tmp/container-user/group
+
 USER node
 
 WORKDIR /workspace
 
 EXPOSE 25808
 
-ENTRYPOINT ["/usr/bin/tini", "--", "/usr/local/bin/entrypoint.sh"]
+ENTRYPOINT ["/usr/bin/tini", "--", "/usr/bin/env", "-u", "LD_PRELOAD", "/usr/local/bin/entrypoint.sh"]
 
 CMD ["/usr/local/bin/bun", "/app/scripts/webui.js", "--remote"]

@@ -1,6 +1,6 @@
 # 公共初始化脚本
 
-统一安装和更新 Agent CLI、可选开发工具；各镜像保留自己的用户、权限和服务启动逻辑。
+准备运行用户身份，统一安装和更新 Agent CLI、可选开发工具；具体服务由入口启动。
 
 ## 一、接入镜像
 
@@ -21,7 +21,13 @@
 没有私有入口时，直接用 `/usr/local/lib/container-common/entrypoint.sh`；仅需降权后台更新时调用 `common_run_updates`。
 `source` 只定义函数，不启动进程。初始化先检查 CLI，再启动一个 CLI 定时任务；额外工具只在启动时检查，不阻塞 CLI 定时更新。
 
-## 二、选择安装内容
+## 二、运行用户
+
+镜像默认普通用户的 UID/GID 统一为 `666:666`，Compose 可通过 `user` 指定其他数字 UID/GID。`user.sh` 按实际运行身份准备用户记录，供 SSH、Git 和 Node 查询；它使用 `libnss-wrapper`，不修改系统用户表或挂载目录属主，同一用户的 `docker exec` 也可使用这些记录。接入镜像时需安装该库，并按现有 Dockerfile 设置 NSS 环境变量。
+
+挂载目录需要允许所指定的用户访问；只读根文件系统需要给 `/tmp` 提供可写空间。SSH 服务由 root 启动时创建默认 `666:666` 的登录账户；以数字用户启动时使用公钥登录，系统密码和 sudo 需要 root 初始化。若系统不允许非特权进程监听 22 端口，可设置 `SSH_LISTEN_PORT` 并相应调整端口映射。
+
+## 三、选择安装内容
 
 | 环境变量 | 默认值 | 用法 |
 | --- | --- | --- |
@@ -34,7 +40,7 @@
 - CLI 和开发工具统一使用 `名称@版本`：完整版本固定不追新版，主版本或次版本选择该范围内的最新稳定版；未指定则按默认频道。重复名称只处理第一项。
 - Python 包的范围若含逗号，保留内层引号，例如 `PYTHON_PACKAGES='"requests>=2,<3",ruff'`。未启用的已有缓存不会被卸载。
 
-## 三、已有安装：跳过、更新或覆盖
+## 四、已有安装：跳过、更新或覆盖
 
 分别设置 `CLI_INSTALL_MODE` 和 `TOOLS_INSTALL_MODE`，默认都是 `update`：
 
@@ -48,7 +54,7 @@ Python 包也使用 `TOOLS_INSTALL_MODE`：`skip` / `update` 只安装缺失或�
 
 **覆盖只作用于 common 管理的安装，不改系统文件。** 系统已有工具可以复用；新安装进入下方目录。CLI 运行中会推迟替换，安装失败保留可用旧版。`agy` 使用官方安装器和自带更新命令。
 
-## 四、检查时间与安装目录
+## 五、检查时间与安装目录
 
 | 环境变量 | 默认值 | 含义 |
 | --- | --- | --- |
@@ -59,7 +65,7 @@ Python 包也使用 `TOOLS_INSTALL_MODE`：`skip` / `update` 只安装缺失或�
 
 常规 CLI 沿用 npm 安装，Go/.NET 等沿用官方发布包，Python 沿用 uv；不引入其他版本管理器。两类安装各用自己的锁和状态，不清理应用缓存。
 
-## 五、镜像要求
+## 六、镜像要求
 
-- Linux/glibc（x86_64、arm64），Bash 4.3+，coreutils、findutils、awk、util-linux（flock）、curl、CA 证书、tar、gzip、unzip、jq。CLI 另需 Node/npm；开发工具安装不依赖 Node。
+- Linux/glibc（x86_64、arm64），Bash 4.3+，coreutils、findutils、awk、util-linux（flock）、libnss-wrapper、curl、CA 证书、tar、gzip、unzip、jq。CLI 另需 Node/npm；开发工具安装不依赖 Node。
 - 必备工具、动态库、编译链接器放 Dockerfile；common 不运行系统包管理器。CLI 更新固定使用镜像自带的 Node/npm，主服务也固定使用镜像自带的运行时，不随可选 Node/Bun 切换。

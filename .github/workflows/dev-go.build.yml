@@ -43,7 +43,7 @@ jobs:
       - name: Check startup script syntax
         run: |
           find common -type f -name '*.sh' -print0 | xargs -0 -r -n 1 bash -n
-          sh -n dev-go/entrypoint.sh
+          bash -n dev-go/entrypoint.sh
           docker compose -f dev-go/compose.sample.yml config --quiet
       - name: Resolve stable toolchain versions
         id: resolve
@@ -122,9 +122,11 @@ jobs:
     uses: ./.github/workflows/docker-release.yml
     with:
       project: dev-go
+      check-numeric-user: true
+      check-ssh-server: true
       check-command: |
         find /usr/local/lib/container-common -type f -name '*.sh' -print0 | xargs -0 -r -n 1 bash -n
-        sh -n /usr/local/bin/entrypoint
+        bash -n /usr/local/bin/entrypoint
         AGENT_CLIS=none CLI_UPDATE_INTERVAL=0 /usr/local/lib/container-common/entrypoint.sh sh -ec 'python --version; go version; node --version; npm --version; task --version'
       context: .
       version: ${{ needs.resolve.outputs.version }}

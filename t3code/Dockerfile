@@ -43,8 +43,8 @@ RUN set -eux; \
 # 运行环境
 FROM node:24-trixie-slim
 
-ARG USER_UID=1000
-ARG USER_GID=1000
+ARG USER_UID=666
+ARG USER_GID=666
 
 # 只安装运行所需工具
 RUN apt-get update \
@@ -59,6 +59,7 @@ RUN apt-get update \
         gzip \
         libatomic1 \
         libicu76 \
+        libnss-wrapper \
         libssl3t64 \
         openssh-client \
         procps \
@@ -69,7 +70,7 @@ RUN apt-get update \
         util-linux \
     && rm -rf /var/lib/apt/lists/*
 
-# 复用基础镜像的非 root 用户，默认 UID/GID 为 1000:1000
+# 复用基础镜像的非 root 用户，默认 UID/GID 为 666:666
 RUN set -eux; \
     if ! getent group "$USER_GID" >/dev/null; then \
         groupadd -g "$USER_GID" agent; \
@@ -96,12 +97,16 @@ ENV HOME=/home/node \
 
 COPY --chmod=755 common/ /usr/local/lib/container-common/
 
+ENV LD_PRELOAD=libnss_wrapper.so \
+    NSS_WRAPPER_PASSWD=/tmp/container-user/passwd \
+    NSS_WRAPPER_GROUP=/tmp/container-user/group
+
 USER node
 
 WORKDIR /workspace
 
 EXPOSE 3773
 
-ENTRYPOINT ["/usr/bin/tini", "--", "/usr/local/lib/container-common/entrypoint.sh"]
+ENTRYPOINT ["/usr/bin/tini", "--", "/usr/bin/env", "-u", "LD_PRELOAD", "/usr/local/lib/container-common/entrypoint.sh"]
 
 CMD ["t3", "serve", "--host", "0.0.0.0", "--port", "3773"]

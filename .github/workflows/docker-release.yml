@@ -13,6 +13,12 @@ on:
       check-command:
         type: string
         required: true
+      check-numeric-user:
+        type: boolean
+        default: false
+      check-ssh-server:
+        type: boolean
+        default: false
       # 默认使用项目目录，需要复用其他目录文件时传入 .
       context:
         type: string
@@ -112,6 +118,87 @@ jobs:
           set -euo pipefail
           # 跳过应用入口，避免安装 Agent CLI 或启动外部连接
           docker run --rm --network none --entrypoint sh local/build:check -ec "$CHECK_COMMAND"
+      - name: Check numeric users
+        if: inputs.check-numeric-user
+        env:
+          CHECK_COMMAND: ${{ inputs.check-command }}
+        run: |
+          set -euo pipefail
+          container=''
+          trap '[[ -z "$container" ]] || { docker logs "$container"; docker rm -f "$container"; }' EXIT
+          default_user="$(docker run --rm --entrypoint sh local/build:check -c 'printf "%s:%s" "$(id -u)" "$(id -g)"')"
+          for run_as in "$default_user" 12345:23456 23456:12345; do
+            uid="${run_as%:*}" gid="${run_as#*:}"
+            # 使用当前用户可写的临时目录，不修改持久卷属主。
+            container="$(docker run -d --network none --user "$run_as" --group-add 34567 \
+              --tmpfs "/home/node:uid=$uid,gid=$gid,mode=700" \
+              --tmpfs "/home/apple:uid=$uid,gid=$gid,mode=700" \
+              --tmpfs "/opt/agent-cli:uid=$uid,gid=$gid,mode=700" \
+              --tmpfs "/data:uid=$uid,gid=$gid,mode=700" \
+              -e AGENT_CLIS=none -e EXTRA_TOOLS=none -e PYTHON_PACKAGES=none \
+              -e PASEO_PLUGINS=none -e CLI_UPDATE_INTERVAL=0 -e CHECK_COMMAND \
+              -e EXPECTED_UID="$uid" -e EXPECTED_GID="$gid" local/build:check bash -ec '
+                test "$(id -u)" = "$EXPECTED_UID"
+                test "$(id -g)" = "$EXPECTED_GID"
+                getent group 34567 >/dev/null
+                ssh -G -F /dev/null example.invalid >/dev/null
+                node -e "const a=require(\"node:assert/strict\"),u=require(\"node:os\").userInfo();a.equal(u.uid,process.getuid());a.equal(u.gid,process.getgid());a.equal(u.homedir,process.env.HOME)"
+                git config --global user.name "Container check"
+                bash -ec "$CHECK_COMMAND"
+                touch /tmp/container-user/ready
+                exec sleep infinity
+              ')"
+            # docker exec 使用容器环境，验证它也能查询入口准备的用户。
+            # shellcheck disable=SC2016
+            timeout 30s docker exec "$container" bash -ec '
+              until [[ -e /tmp/container-user/ready ]]; do sleep 0.1; done
+              getent passwd "$(id -u)" >/dev/null
+              getent group "$(id -g)" >/dev/null
+              ssh -G -F /dev/null example.invalid >/dev/null
+            '
+            docker rm -f "$container" >/dev/null
+            container=''
+          done
+      - name: Check SSH server
+        if: inputs.check-ssh-server
+        run: |
+          set -euo pipefail
+          container=''
+          key="$RUNNER_TEMP/container-ssh-check"
+          trap '[[ -z "$container" ]] || { docker logs "$container"; docker rm -f "$container"; }; rm -f "$key" "$key.pub"' EXIT
+          ssh-keygen -q -t ed25519 -N "" -f "$key"
+          public_key="$(cat "$key.pub")"
+          for run_as in 0:0 666:666 12345:23456; do
+            uid="${run_as%:*}" gid="${run_as#*:}"
+            container="$(docker run -d --network none --user "$run_as" \
+              --tmpfs "/home/apple:uid=$uid,gid=$gid,mode=700" \
+              --tmpfs "/config:uid=$uid,gid=$gid,mode=700" \
+              --tmpfs "/opt/agent-cli:uid=$uid,gid=$gid,mode=700" \
+              -e PUBLIC_KEY="$public_key" -e SSH_LISTEN_PORT=22222 \
+              -e AGENT_CLIS=none -e EXTRA_TOOLS=none -e PYTHON_PACKAGES=none \
+              -e CLI_UPDATE_INTERVAL=0 local/build:check)"
+            docker exec -i "$container" sh -c 'umask 077; cat > /tmp/client-key' < "$key"
+            # shellcheck disable=SC2016
+            login_user="$(timeout 30s docker exec "$container" bash -ec '
+              until (echo >/dev/tcp/127.0.0.1/22222) 2>/dev/null; do sleep 0.1; done
+              ssh -F /dev/null -p 22222 -i /tmp/client-key \
+                -o BatchMode=yes -o ConnectTimeout=5 \
+                -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null \
+                apple@127.0.0.1 '\''
+                  getent passwd "$(id -u)" >/dev/null
+                  ssh -G -F /dev/null example.invalid >/dev/null
+                  printf "%s:%s\n" "$(id -u)" "$(id -g)"
+                '\''
+            ')"
+            expected_user="$run_as"
+            if [[ "$run_as" == 0:0 ]]; then
+              expected_user=666:666
+              test "$(docker exec "$container" stat -c %u /config/ssh/ssh_host_ed25519_key)" = 0
+            fi
+            test "$login_user" = "$expected_user"
+            docker rm -f "$container" >/dev/null
+            container=''
+          done
       # 推送本地已检查的 OCI 产物，不重新构建，也不跨 job 搬运镜像
       - name: Push checked image by digest
         if: inputs.publish && github.ref == format('refs/heads/{0}', github.event.repository.default_branch) && github.event_name != 'pull_request'

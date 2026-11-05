@@ -2,6 +2,7 @@
 set -Eeuo pipefail
 
 source /usr/local/lib/container-common/init.sh
+common_prepare_user
 
 prepare_node_runtime() {
   local data_dir="${AIONUI_DATA_DIR:-$HOME/.aionui-web}"
