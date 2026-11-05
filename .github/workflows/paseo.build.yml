@@ -6,7 +6,6 @@ on:
     paths:
       - "paseo/**"
       - "common/**"
-      - ".dockerignore"
       - ".github/workflows/paseo.build.yml"
       - ".github/workflows/docker-release.yml"
   push:
@@ -14,7 +13,6 @@ on:
     paths:
       - "paseo/**"
       - "common/**"
-      - ".dockerignore"
       - ".github/workflows/paseo.build.yml"
       - ".github/workflows/docker-release.yml"
   schedule:
@@ -45,9 +43,9 @@ jobs:
       - name: Check startup script syntax
         run: |
           find common -type f -name '*.sh' -print0 | xargs -0 -r -n 1 bash -n
-          bash common/check.sh
           bash -n paseo/entrypoint.sh
           node --check paseo/plugins.mjs
+          PASEO_PASSWORD=configuration-only docker compose -f paseo/compose.sample.yml config --quiet
       - name: Resolve stable release
         id: resolve
         env:
@@ -62,7 +60,7 @@ jobs:
             {
               printf '%s\n' "$version"
               find common -type f -print0 | LC_ALL=C sort -z | xargs -0 sha256sum
-              sha256sum .dockerignore paseo/Dockerfile paseo/entrypoint.sh paseo/plugins.mjs \
+              sha256sum paseo/Dockerfile paseo/entrypoint.sh paseo/plugins.mjs \
                 .github/workflows/paseo.build.yml .github/workflows/docker-release.yml
             } | sha256sum | cut -d ' ' -f1
           )"

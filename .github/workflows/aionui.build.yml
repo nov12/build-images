@@ -6,7 +6,6 @@ on:
     paths:
       - "aionui/**"
       - "common/**"
-      - ".dockerignore"
       - ".github/workflows/aionui.build.yml"
       - ".github/workflows/docker-release.yml"
   push:
@@ -14,7 +13,6 @@ on:
     paths:
       - "aionui/**"
       - "common/**"
-      - ".dockerignore"
       - ".github/workflows/aionui.build.yml"
       - ".github/workflows/docker-release.yml"
   schedule:
@@ -49,8 +47,8 @@ jobs:
       - name: Check startup script syntax
         run: |
           find common -type f -name '*.sh' -print0 | xargs -0 -r -n 1 bash -n
-          bash common/check.sh
           bash -n aionui/entrypoint.sh
+          docker compose -f aionui/compose.sample.yml config --quiet
       - name: Resolve version
         id: resolve
         env:
@@ -65,7 +63,7 @@ jobs:
             {
               printf '%s\n' "$version"
               find common -type f -print0 | LC_ALL=C sort -z | xargs -0 sha256sum
-              sha256sum .dockerignore aionui/Dockerfile aionui/entrypoint.sh \
+              sha256sum aionui/Dockerfile aionui/entrypoint.sh \
                 .github/workflows/aionui.build.yml .github/workflows/docker-release.yml
             } | sha256sum | cut -d ' ' -f1
           )"

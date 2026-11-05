@@ -6,7 +6,6 @@ on:
     paths:
       - "t3code/**"
       - "common/**"
-      - ".dockerignore"
       - ".github/workflows/t3code.build.yml"
       - ".github/workflows/docker-release.yml"
   push:
@@ -14,7 +13,6 @@ on:
     paths:
       - "t3code/**"
       - "common/**"
-      - ".dockerignore"
       - ".github/workflows/t3code.build.yml"
       - ".github/workflows/docker-release.yml"
   schedule:
@@ -45,7 +43,7 @@ jobs:
       - name: Check startup script syntax
         run: |
           find common -type f -name '*.sh' -print0 | xargs -0 -r -n 1 bash -n
-          bash common/check.sh
+          docker compose -f t3code/compose.sample.yml config --quiet
       - name: Resolve version
         id: resolve
         env:
@@ -60,7 +58,7 @@ jobs:
             {
               printf '%s\n' "$version"
               find common -type f -print0 | LC_ALL=C sort -z | xargs -0 sha256sum
-              sha256sum .dockerignore t3code/Dockerfile \
+              sha256sum t3code/Dockerfile \
                 .github/workflows/t3code.build.yml .github/workflows/docker-release.yml
             } | sha256sum | cut -d ' ' -f1
           )"

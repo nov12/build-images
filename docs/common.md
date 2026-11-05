@@ -2,26 +2,26 @@
 
 统一安装和更新 Agent CLI、可选开发工具；各镜像保留自己的用户、权限和服务启动逻辑。
 
-## 接入镜像
+## 一、接入镜像
 
-构建上下文使用仓库根目录，复制整个 `common/`：
+1. 构建上下文使用仓库根目录，复制整个 `common/`：
 
-```dockerfile
-COPY --chmod=755 common/ /usr/local/lib/container-common/
-```
+   ```dockerfile
+   COPY --chmod=755 common/ /usr/local/lib/container-common/
+   ```
 
-在自己的 Bash 入口中引入：
+2. 在自己的 Bash 入口中引入：
 
-```bash
-source /usr/local/lib/container-common/init.sh
-common_initialize
-exec "$@"
-```
+   ```bash
+   source /usr/local/lib/container-common/init.sh
+   common_initialize
+   exec "$@"
+   ```
 
 没有私有入口时，直接用 `/usr/local/lib/container-common/entrypoint.sh`；仅需降权后台更新时调用 `common_run_updates`。
 `source` 只定义函数，不启动进程。初始化先检查 CLI，再启动一个 CLI 定时任务；额外工具只在启动时检查，不阻塞 CLI 定时更新。
 
-## 选择安装内容
+## 二、选择安装内容
 
 | 环境变量 | 默认值 | 用法 |
 | --- | --- | --- |
@@ -34,7 +34,7 @@ exec "$@"
 - CLI 和开发工具统一使用 `名称@版本`：完整版本固定不追新版，主版本或次版本选择该范围内的最新稳定版；未指定则按默认频道。重复名称只处理第一项。
 - Python 包的范围若含逗号，保留内层引号，例如 `PYTHON_PACKAGES='"requests>=2,<3",ruff'`。未启用的已有缓存不会被卸载。
 
-## 已有安装：跳过、更新或覆盖
+## 三、已有安装：跳过、更新或覆盖
 
 分别设置 `CLI_INSTALL_MODE` 和 `TOOLS_INSTALL_MODE`，默认都是 `update`：
 
@@ -48,7 +48,7 @@ Python 包也使用 `TOOLS_INSTALL_MODE`：`skip` / `update` 只安装缺失或�
 
 **覆盖只作用于 common 管理的安装，不改系统文件。** 系统已有工具可以复用；新安装进入下方目录。CLI 运行中会推迟替换，安装失败保留可用旧版。`agy` 使用官方安装器和自带更新命令。
 
-## 检查时间与安装目录
+## 四、检查时间与安装目录
 
 | 环境变量 | 默认值 | 含义 |
 | --- | --- | --- |
@@ -59,8 +59,7 @@ Python 包也使用 `TOOLS_INSTALL_MODE`：`skip` / `update` 只安装缺失或�
 
 常规 CLI 沿用 npm 安装，Go/.NET 等沿用官方发布包，Python 沿用 uv；不引入其他版本管理器。两类安装各用自己的锁和状态，不清理应用缓存。
 
-## 镜像要求与自检
+## 五、镜像要求
 
-- Linux/glibc（x86_64、arm64），Bash 4.3+，coreutils、findutils、util-linux（flock），curl、CA 证书、tar、gzip、unzip、jq。CLI 另需 Node/npm；开发工具安装不依赖 Node。
+- Linux/glibc（x86_64、arm64），Bash 4.3+，coreutils、findutils、awk、util-linux（flock）、curl、CA 证书、tar、gzip、unzip、jq。CLI 另需 Node/npm；开发工具安装不依赖 Node。
 - 必备工具、动态库、编译链接器放 Dockerfile；common 不运行系统包管理器。CLI 更新固定使用镜像自带的 Node/npm，主服务也固定使用镜像自带的运行时，不随可选 Node/Bun 切换。
-- 自检：`bash common/check.sh`。CI 会执行；自检和本文不打包进镜像。

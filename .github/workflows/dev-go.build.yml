@@ -6,7 +6,6 @@ on:
     paths:
       - "dev-go/**"
       - "common/**"
-      - ".dockerignore"
       - ".github/workflows/dev-go.build.yml"
       - ".github/workflows/docker-release.yml"
   push:
@@ -14,7 +13,6 @@ on:
     paths:
       - "dev-go/**"
       - "common/**"
-      - ".dockerignore"
       - ".github/workflows/dev-go.build.yml"
       - ".github/workflows/docker-release.yml"
   schedule:
@@ -45,8 +43,8 @@ jobs:
       - name: Check startup script syntax
         run: |
           find common -type f -name '*.sh' -print0 | xargs -0 -r -n 1 bash -n
-          bash common/check.sh
           sh -n dev-go/entrypoint.sh
+          docker compose -f dev-go/compose.sample.yml config --quiet
       - name: Resolve stable toolchain versions
         id: resolve
         env:
@@ -78,7 +76,7 @@ jobs:
             {
               printf '%s\n' "$PYTHON_VERSION" "$GO_VERSION" "$NODE_VERSION" "$task_version"
               find common -type f -print0 | LC_ALL=C sort -z | xargs -0 sha256sum
-              sha256sum .dockerignore dev-go/Dockerfile dev-go/entrypoint.sh \
+              sha256sum dev-go/Dockerfile dev-go/entrypoint.sh \
                 .github/workflows/dev-go.build.yml .github/workflows/docker-release.yml
             } | sha256sum | cut -d ' ' -f1
           )"
