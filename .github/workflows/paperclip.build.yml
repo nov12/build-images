@@ -1,0 +1,155 @@
+name: Build Paperclip
+
+on:
+  workflow_dispatch:
+  pull_request:
+    paths:
+      - "paperclip/**"
+      - "common/**"
+      - ".github/workflows/paperclip.build.yml"
+      - ".github/workflows/docker-release.yml"
+  push:
+    branches: [main]
+    paths:
+      - "paperclip/**"
+      - "common/**"
+      - ".github/workflows/paperclip.build.yml"
+      - ".github/workflows/docker-release.yml"
+  schedule:
+    - cron: "43 3 * * 1"
+
+permissions:
+  contents: read
+  packages: write
+
+concurrency:
+  group: paperclip-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  resolve:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    outputs:
+      version: ${{ steps.resolve.outputs.version }}
+      build: ${{ steps.decision.outputs.build || steps.resolve.outputs.build }}
+      args: ${{ steps.resolve.outputs.args }}
+      build_key: ${{ steps.resolve.outputs.build_key }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+      - name: Check startup scripts
+        run: |
+          find common -type f -name '*.sh' -print0 | xargs -0 -r -n 1 bash -n
+          bash -n paperclip/entrypoint.sh
+      - name: Validate deployment examples
+        env:
+          BETTER_AUTH_SECRET: validation-only-not-a-deployment-secret
+          PAPERCLIP_TOOL_ACTION_SIGNING_SECRET: validation-only-tool-action-signing-secret
+          PAPERCLIP_PUBLIC_URL: https://paperclip.example.com
+          DATABASE_URL: postgresql://paperclip:validation-only@db.example.com:5432/paperclip
+        run: |
+          docker compose -f paperclip/compose.sample.yml config --quiet
+          docker compose -f paperclip/compose.public.sample.yml config --quiet
+      - name: Resolve stable source
+        id: resolve
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          tag="$(gh api repos/paperclipai/paperclip/releases/latest --jq .tag_name)"
+          [[ "$tag" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]]
+          upstream_version="${tag#v}"
+          commit="$(gh api "repos/paperclipai/paperclip/commits/$tag" --jq .sha)"
+          [[ "$commit" =~ ^[a-f0-9]{40}$ ]]
+
+          build_key="$(
+            {
+              printf '%s\n' "$upstream_version" "$commit"
+              find common -type f -print0 | LC_ALL=C sort -z | xargs -0 sha256sum
+              sha256sum paperclip/Dockerfile paperclip/entrypoint.sh \
+                .github/workflows/paperclip.build.yml .github/workflows/docker-release.yml
+            } | sha256sum | cut -d ' ' -f1
+          )"
+          {
+            echo 'args<<PAPERCLIP_BUILD_ARGS'
+            echo "PAPERCLIP_VERSION=$upstream_version"
+            echo "PAPERCLIP_COMMIT=$commit"
+            echo 'PAPERCLIP_BUILD_ARGS'
+            echo "version=paperclip-$upstream_version"
+            echo "build_key=$build_key"
+            echo 'build=true'
+          } >> "$GITHUB_OUTPUT"
+      - name: Login for release lookup
+        if: github.event_name == 'schedule'
+        uses: docker/login-action@v4
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ github.token }}
+      - name: Skip unchanged multi-platform release
+        id: decision
+        if: github.event_name == 'schedule'
+        env:
+          VERSION: ${{ steps.resolve.outputs.version }}
+          BUILD_KEY: ${{ steps.resolve.outputs.build_key }}
+        run: |
+          set -euo pipefail
+          image="ghcr.io/${GITHUB_REPOSITORY_OWNER,,}/paperclip"
+          if docker buildx imagetools inspect "$image:$VERSION" --raw > manifest.json 2>/dev/null && \
+             jq -e --arg key "$BUILD_KEY" '
+               .annotations["io.build-images.build-key"] == $key and
+               ([.manifests[] | .platform | "\(.os)/\(.architecture)"] | sort == ["linux/amd64", "linux/arm64"])
+             ' manifest.json; then
+            echo 'build=false' >> "$GITHUB_OUTPUT"
+          fi
+
+  release:
+    needs: resolve
+    if: needs.resolve.outputs.build == 'true'
+    uses: ./.github/workflows/docker-release.yml
+    with:
+      project: paperclip
+      check-numeric-user: true
+      context: .
+      # Match the shared workflow: offline binary/module checks, no provider calls.
+      # --build-metadata executes the native Runner on each architecture.
+      check-command: |
+        test -s /app/server/dist/index.js
+        test -s /app/ui/dist/index.html
+        test -s /app/LICENSE
+        test "$(id -u)" -ne 0
+        test -w /home/node
+        test -w /opt/agent-cli
+        test "$(npm config get prefix)" = /home/node/.local
+        test "$(npm config get cache)" = /home/node/.npm
+        test -s /opt/paperclip-runner/provider-pack/provider-pack.json
+        find /usr/local/lib/container-common -type f -name '*.sh' -print0 | xargs -0 -r -n 1 bash -n
+        test -s /usr/local/lib/container-common/init.sh
+        test -s /usr/local/lib/container-common/user.sh
+        bash -n /usr/local/lib/paperclip/entrypoint.sh
+        test -x /usr/local/lib/paperclip/entrypoint.sh
+        AGENT_CLIS=none EXTRA_TOOLS=none PYTHON_PACKAGES=none CLI_UPDATE_INTERVAL=0 /usr/local/lib/paperclip/entrypoint.sh /usr/local/bin/node --version
+        /app/packages/paperclip-runner/dist/bin/paperclip-runnerd --build-metadata
+        cd /app
+        test -s packages/plugins/plugin-workspace-diff/dist/manifest.js
+        test -s packages/plugins/plugin-workspace-diff/dist/worker.js
+        test -s packages/plugins/plugin-workspace-diff/dist/ui/index.js
+        /usr/local/bin/node cli/node_modules/tsx/dist/cli.mjs cli/src/index.ts auth bootstrap-ceo --help > /dev/null
+        cd /app/server
+        /usr/local/bin/node --import ./node_modules/tsx/dist/loader.mjs --input-type=module -e '
+          const { startServer } = await import("./dist/index.js");
+          if (typeof startServer !== "function") throw new Error("Missing server entry");
+          const { default: EmbeddedPostgres } = await import("embedded-postgres");
+          if (typeof EmbeddedPostgres !== "function") throw new Error("Missing embedded database runtime");
+          const { default: sharp } = await import("sharp");
+          await sharp({ create: { width: 1, height: 1, channels: 4, background: "white" } }).png().toBuffer();
+        '
+      upstream-repository: paperclipai/paperclip
+      upstream-version-prefix: paperclip-
+      version: ${{ needs.resolve.outputs.version }}
+      build-args: ${{ needs.resolve.outputs.args }}
+      build-key: ${{ needs.resolve.outputs.build_key }}
+      publish: ${{ github.event_name != 'pull_request' && github.ref == format('refs/heads/{0}', github.event.repository.default_branch) }}

@@ -1,0 +1,53 @@
+# Private network: embedded PostgreSQL, no DATABASE_URL.
+# Generate each .env secret with openssl rand -hex 32; claim the first admin before sharing access.
+services:
+  paperclip:
+    image: "${PAPERCLIP_IMAGE:-ghcr.io/nov12/paperclip:latest}"
+    container_name: paperclip
+    restart: unless-stopped
+    user: "${PUID:-666}:${PGID:-666}"
+    pids_limit: 2048
+    stop_grace_period: 90s
+
+    ports:
+      - "${PAPERCLIP_BIND_IP:-0.0.0.0}:${PAPERCLIP_PORT:-3100}:${PAPERCLIP_PORT:-3100}"
+
+    environment:
+      PORT: "${PAPERCLIP_PORT:-3100}"
+      PAPERCLIP_DEPLOYMENT_MODE: "authenticated"
+      PAPERCLIP_DEPLOYMENT_EXPOSURE: "private"
+      # Browser URL; change to your LAN address.
+      PAPERCLIP_PUBLIC_URL: "${PAPERCLIP_PUBLIC_URL:-http://localhost:${PAPERCLIP_PORT:-3100}}"
+      BETTER_AUTH_SECRET: "${BETTER_AUTH_SECRET:?Set BETTER_AUTH_SECRET in .env}"
+      PAPERCLIP_TOOL_ACTION_SIGNING_SECRET: "${PAPERCLIP_TOOL_ACTION_SIGNING_SECRET:?Set PAPERCLIP_TOOL_ACTION_SIGNING_SECRET in .env}"
+
+      # all | none | comma-separated name[@version].
+      AGENT_CLIS: "${AGENT_CLIS-codex,claude,opencode,pi,kimi}"
+      # AGENT_CLIS: "codex@0.166.0,claude@2"
+
+      CLI_UPDATE_INTERVAL: "${CLI_UPDATE_INTERVAL:-86400}" # 0 disables periodic checks, not startup checks.
+
+      # Optional tools/packages; uncomment as needed.
+      # EXTRA_TOOLS: "go,python@3.13,node@22,dotnet@lts"
+      # PYTHON_PACKAGES: '"requests>=2,<3",ruff'
+      # Modes: skip=reuse, update=default, overwrite=reinstall.
+      # CLI_INSTALL_MODE: "update"
+      # TOOLS_INSTALL_MODE: "update"
+      # TOOLS_UPDATE_INTERVAL: "86400" # Startup checks; 0 reuses matching tools.
+
+      OPENAI_API_KEY: "${OPENAI_API_KEY:-}"
+      ANTHROPIC_API_KEY: "${ANTHROPIC_API_KEY:-}"
+      GEMINI_API_KEY: "${GEMINI_API_KEY:-}"
+      GOOGLE_API_KEY: "${GOOGLE_API_KEY:-}"
+
+    volumes:
+      - paperclip-data:/paperclip # Back up app state and the embedded database.
+      - paperclip-home:/home/node # Provider logins and optional tools.
+      - agent-cli:/opt/agent-cli
+
+      - ./workspace:/workspace # Must be writable by PUID:PGID.
+
+volumes:
+  paperclip-data:
+  paperclip-home:
+  agent-cli:
