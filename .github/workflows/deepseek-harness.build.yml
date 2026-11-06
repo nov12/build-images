@@ -56,10 +56,6 @@ jobs:
         uses: actions/setup-node@v6
         with:
           node-version: ${{ steps.toolchains.outputs.node_version }}
-      - name: Set up uv
-        uses: astral-sh/setup-uv@v10
-        with:
-          version: latest
       - name: Check configuration
         run: |
           set -euo pipefail
@@ -69,6 +65,7 @@ jobs:
       - name: Resolve current releases
         id: resolve
         env:
+          GH_TOKEN: ${{ github.token }}
           NODE_VERSION: ${{ steps.toolchains.outputs.node_version }}
         run: |
           set -euo pipefail
@@ -81,7 +78,9 @@ jobs:
           cat dsh-release.json >> "$GITHUB_STEP_SUMMARY"
           pnpm_version="$(npm view pnpm@latest version)"
           [[ "$pnpm_version" =~ ^[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z.-]+)?$ ]]
-          uv_version="$(uv --version | awk '{print $2}')"
+          uv_version="$(gh api repos/astral-sh/uv/releases/latest --jq .tag_name)"
+          uv_version="${uv_version#v}"
+          [[ "$uv_version" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]
           build_key="$(
             {
               printf '%s\n' "$version" "$integrity" "$commit" "$pnpm_version" "$uv_version" "$NODE_VERSION"
