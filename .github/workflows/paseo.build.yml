@@ -6,7 +6,7 @@ on:
     paths:
       - "paseo/**"
       - "common/**"
-      - ".github/scripts/**"
+      - ".github/scripts/resolve-toolchains.sh"
       - ".github/workflows/paseo.build.yml"
       - ".github/workflows/docker-release.yml"
   push:
@@ -14,7 +14,7 @@ on:
     paths:
       - "paseo/**"
       - "common/**"
-      - ".github/scripts/**"
+      - ".github/scripts/resolve-toolchains.sh"
       - ".github/workflows/paseo.build.yml"
       - ".github/workflows/docker-release.yml"
   schedule:
@@ -48,7 +48,9 @@ jobs:
         id: toolchains
         env:
           GH_TOKEN: ${{ github.token }}
-        run: bash .github/scripts/resolve-toolchains.sh
+        run: |
+          bash -n .github/scripts/resolve-toolchains.sh
+          bash .github/scripts/resolve-toolchains.sh
       - name: Check startup script syntax
         run: |
           find common -type f -name '*.sh' -print0 | xargs -0 -r -n 1 bash -n
@@ -74,8 +76,8 @@ jobs:
           build_key="$(
             {
               printf '%s\n' "$version" "$commit" "$NODE_VERSION"
-              find common .github/scripts -type f -print0 | LC_ALL=C sort -z | xargs -0 sha256sum
-              sha256sum paseo/Dockerfile paseo/entrypoint.sh paseo/plugins.mjs \
+              find common -type f -print0 | LC_ALL=C sort -z | xargs -0 sha256sum
+              sha256sum .github/scripts/resolve-toolchains.sh paseo/Dockerfile paseo/entrypoint.sh paseo/plugins.mjs \
                 .github/workflows/paseo.build.yml .github/workflows/docker-release.yml
             } | sha256sum | cut -d ' ' -f1
           )"
@@ -93,6 +95,10 @@ jobs:
     with:
       project: paseo
       check-numeric-user: true
+      numeric-user-mounts: |
+        /home/node
+        /opt/agent-cli
+        /data
       check-command: |
         find /usr/local/lib/container-common -type f -name '*.sh' -print0 | xargs -0 -r -n 1 bash -n
         bash -n /usr/local/lib/paseo/entrypoint.sh
@@ -108,5 +114,29 @@ jobs:
       build-key: ${{ needs.resolve.outputs.build_key }}
       security-rebuild: ${{ github.event_name == 'schedule' || github.event_name == 'workflow_dispatch' }}
       record-build: true
+      record-command: |
+        node --version
+        npm --version
+        sha256sum /opt/paseo/package-lock.json
+        dpkg-query -W
       check-startup: true
+      startup-command: |
+        docker run -d --network none \
+          -e AGENT_CLIS=none -e EXTRA_TOOLS=none -e PYTHON_PACKAGES=none \
+          -e PASEO_PLUGINS=none -e PASEO_PASSWORD=offline-startup-check \
+          -e CLI_UPDATE_INTERVAL=0 "$CHECK_IMAGE"
+      startup-check-command: |
+        docker exec "$CHECK_CONTAINER" /usr/local/bin/node --input-type=module -e '
+          const response = await fetch("http://127.0.0.1:6767/", { signal: AbortSignal.timeout(4000) });
+          if (!response.ok || !(await response.text()).toLowerCase().includes("<html")) throw new Error("Missing Web UI");
+        '
+        docker exec "$CHECK_CONTAINER" /usr/local/bin/node --input-type=module -e '
+          import { createRequire } from "node:module";
+          const require = createRequire("/opt/paseo/node_modules/@getpaseo/server/package.json");
+          const terminal = require("node-pty").spawn("/bin/sh", ["-c", "printf native-pty-ready"], { name: "xterm", cols: 80, rows: 24 });
+          let output = "";
+          const timer = setTimeout(() => { terminal.kill(); process.exit(1); }, 10000);
+          terminal.onData(data => { output += data; });
+          terminal.onExit(({ exitCode }) => { clearTimeout(timer); if (exitCode !== 0 || !output.includes("native-pty-ready")) process.exit(1); });
+        '
       publish: ${{ github.event_name != 'pull_request' && github.ref == format('refs/heads/{0}', github.event.repository.default_branch) }}

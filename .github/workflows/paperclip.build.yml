@@ -6,7 +6,7 @@ on:
     paths:
       - "paperclip/**"
       - "common/**"
-      - ".github/scripts/**"
+      - ".github/scripts/resolve-toolchains.sh"
       - ".github/workflows/paperclip.build.yml"
       - ".github/workflows/docker-release.yml"
   push:
@@ -14,7 +14,7 @@ on:
     paths:
       - "paperclip/**"
       - "common/**"
-      - ".github/scripts/**"
+      - ".github/scripts/resolve-toolchains.sh"
       - ".github/workflows/paperclip.build.yml"
       - ".github/workflows/docker-release.yml"
   schedule:
@@ -49,11 +49,15 @@ jobs:
         id: toolchains
         env:
           GH_TOKEN: ${{ github.token }}
-        run: bash .github/scripts/resolve-toolchains.sh corepack
+        run: |
+          bash -n .github/scripts/resolve-toolchains.sh
+          bash .github/scripts/resolve-toolchains.sh corepack
       - name: Check startup scripts
         run: |
           find common -type f -name '*.sh' -print0 | xargs -0 -r -n 1 bash -n
           bash -n paperclip/entrypoint.sh
+      - name: Check runtime preparation syntax
+        run: node --check paperclip/prepare-runtime.mjs
       - name: Validate deployment examples
         env:
           BETTER_AUTH_SECRET: validation-only-not-a-deployment-secret
@@ -82,8 +86,8 @@ jobs:
           build_key="$(
             {
               printf '%s\n' "$upstream_version" "$commit" "$NODE_VERSION" "$COREPACK_VERSION"
-              find common .github/scripts -type f -print0 | LC_ALL=C sort -z | xargs -0 sha256sum
-              sha256sum paperclip/Dockerfile paperclip/entrypoint.sh paperclip/prepare-runtime.mjs \
+              find common -type f -print0 | LC_ALL=C sort -z | xargs -0 sha256sum
+              sha256sum .github/scripts/resolve-toolchains.sh paperclip/Dockerfile paperclip/entrypoint.sh paperclip/prepare-runtime.mjs \
                 .github/workflows/paperclip.build.yml .github/workflows/docker-release.yml
             } | sha256sum | cut -d ' ' -f1
           )"
@@ -104,6 +108,10 @@ jobs:
     with:
       project: paperclip
       check-numeric-user: true
+      numeric-user-mounts: |
+        /home/node
+        /opt/agent-cli
+        /data
       context: .
       # Match the shared workflow: offline binary/module checks, no provider calls.
       # --build-metadata executes the native Runner on each architecture.
@@ -149,5 +157,30 @@ jobs:
       build-key: ${{ needs.resolve.outputs.build_key }}
       security-rebuild: ${{ github.event_name == 'schedule' || github.event_name == 'workflow_dispatch' }}
       record-build: true
+      record-command: |
+        cd /app
+        node --version
+        npm --version
+        corepack --version
+        pnpm --version
+        cat /app/.build/runtime.json
+        cat /opt/paperclip-runner/provider-pack/provider-pack.json
+        find /usr/local/share/build-images -type f -print -exec cat {} \;
+        dpkg-query -W
       check-startup: true
+      startup-timeout: 600
+      startup-command: |
+        docker run -d --network none \
+          -e AGENT_CLIS=none -e EXTRA_TOOLS=none -e PYTHON_PACKAGES=none \
+          -e CLI_UPDATE_INTERVAL=0 -e PAPERCLIP_DEPLOYMENT_MODE=authenticated \
+          -e BETTER_AUTH_SECRET="$(openssl rand -hex 32)" \
+          -e PAPERCLIP_TOOL_ACTION_SIGNING_SECRET="$(openssl rand -hex 32)" \
+          -e PAPERCLIP_DEPLOYMENT_EXPOSURE=private "$CHECK_IMAGE"
+      startup-check-command: |
+        docker exec "$CHECK_CONTAINER" /usr/local/bin/node --input-type=module -e '
+          const health = await fetch("http://127.0.0.1:3100/api/health", { signal: AbortSignal.timeout(4000) });
+          if (!health.ok || (await health.json()).status !== "ok") throw new Error("Paperclip health check failed");
+          const response = await fetch("http://127.0.0.1:3100/", { signal: AbortSignal.timeout(4000) });
+          if (!response.ok || !(await response.text()).toLowerCase().includes("<html")) throw new Error("Missing Web UI");
+        '
       publish: ${{ github.event_name != 'pull_request' && github.ref == format('refs/heads/{0}', github.event.repository.default_branch) }}

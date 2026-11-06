@@ -6,7 +6,7 @@ on:
     paths:
       - "dev-go/**"
       - "common/**"
-      - ".github/scripts/**"
+      - ".github/scripts/resolve-toolchains.sh"
       - ".github/workflows/dev-go.build.yml"
       - ".github/workflows/docker-release.yml"
   push:
@@ -14,7 +14,7 @@ on:
     paths:
       - "dev-go/**"
       - "common/**"
-      - ".github/scripts/**"
+      - ".github/scripts/resolve-toolchains.sh"
       - ".github/workflows/dev-go.build.yml"
       - ".github/workflows/docker-release.yml"
   schedule:
@@ -47,7 +47,9 @@ jobs:
         id: toolchains
         env:
           GH_TOKEN: ${{ github.token }}
-        run: bash .github/scripts/resolve-toolchains.sh
+        run: |
+          bash -n .github/scripts/resolve-toolchains.sh
+          bash .github/scripts/resolve-toolchains.sh
       - name: Check startup script syntax
         run: |
           find common -type f -name '*.sh' -print0 | xargs -0 -r -n 1 bash -n
@@ -79,8 +81,8 @@ jobs:
           build_key="$(
             {
               printf '%s\n' "$PYTHON_VERSION" "$GO_VERSION" "$NODE_VERSION" "$task_version"
-              find common .github/scripts -type f -print0 | LC_ALL=C sort -z | xargs -0 sha256sum
-              sha256sum dev-go/Dockerfile dev-go/entrypoint.sh \
+              find common -type f -print0 | LC_ALL=C sort -z | xargs -0 sha256sum
+              sha256sum .github/scripts/resolve-toolchains.sh dev-go/Dockerfile dev-go/entrypoint.sh \
                 .github/workflows/dev-go.build.yml .github/workflows/docker-release.yml
             } | sha256sum | cut -d ' ' -f1
           )"
@@ -103,7 +105,47 @@ jobs:
     with:
       project: dev-go
       check-numeric-user: true
+      numeric-user-mounts: |
+        /home/apple
+        /opt/agent-cli
+        /data
       check-ssh-server: true
+      ssh-check-command: |
+        container=''
+        key="$RUNNER_TEMP/container-ssh-check"
+        trap '[[ -z "$container" ]] || { docker logs "$container"; docker rm -f "$container"; }; rm -f "$key" "$key.pub"' EXIT
+        ssh-keygen -q -t ed25519 -N "" -f "$key"
+        public_key="$(cat "$key.pub")"
+        for run_as in 0:0 666:666 12345:23456; do
+          uid="${run_as%:*}" gid="${run_as#*:}"
+          container="$(docker run -d --network none --user "$run_as" \
+            --tmpfs "/home/apple:uid=$uid,gid=$gid,mode=700" \
+            --tmpfs "/config:uid=$uid,gid=$gid,mode=700" \
+            --tmpfs "/opt/agent-cli:uid=$uid,gid=$gid,mode=700" \
+            -e PUBLIC_KEY="$public_key" -e SSH_LISTEN_PORT=22222 \
+            -e AGENT_CLIS=none -e EXTRA_TOOLS=none -e PYTHON_PACKAGES=none \
+            -e CLI_UPDATE_INTERVAL=0 "$CHECK_IMAGE")"
+          docker exec -i "$container" sh -c 'umask 077; cat > /tmp/client-key' < "$key"
+          login_user="$(timeout 30s docker exec "$container" bash -ec '
+            until (echo >/dev/tcp/127.0.0.1/22222) 2>/dev/null; do sleep 0.1; done
+            ssh -F /dev/null -p 22222 -i /tmp/client-key \
+              -o BatchMode=yes -o ConnectTimeout=5 \
+              -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null \
+              apple@127.0.0.1 '\''
+                getent passwd "$(id -u)" >/dev/null
+                ssh -G -F /dev/null example.invalid >/dev/null
+                printf "%s:%s\n" "$(id -u)" "$(id -g)"
+              '\''
+          ')"
+          expected_user="$run_as"
+          if [[ "$run_as" == 0:0 ]]; then
+            expected_user=666:666
+            test "$(docker exec "$container" stat -c %u /config/ssh/ssh_host_ed25519_key)" = 0
+          fi
+          test "$login_user" = "$expected_user"
+          docker rm -f "$container" >/dev/null
+          container=''
+        done
       check-command: |
         find /usr/local/lib/container-common -type f -name '*.sh' -print0 | xargs -0 -r -n 1 bash -n
         bash -n /usr/local/bin/entrypoint
@@ -116,4 +158,12 @@ jobs:
       build-key: ${{ needs.resolve.outputs.build_key }}
       security-rebuild: ${{ github.event_name == 'schedule' || github.event_name == 'workflow_dispatch' }}
       record-build: true
+      record-command: |
+        node --version
+        npm --version
+        python --version
+        task --version
+        go version
+        find /usr/local/share/build-images -type f -print -exec cat {} \;
+        dpkg-query -W
       publish: ${{ github.event_name != 'pull_request' && github.ref == format('refs/heads/{0}', github.event.repository.default_branch) }}

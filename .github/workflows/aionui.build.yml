@@ -6,7 +6,7 @@ on:
     paths:
       - "aionui/**"
       - "common/**"
-      - ".github/scripts/**"
+      - ".github/scripts/resolve-toolchains.sh"
       - ".github/workflows/aionui.build.yml"
       - ".github/workflows/docker-release.yml"
   push:
@@ -14,7 +14,7 @@ on:
     paths:
       - "aionui/**"
       - "common/**"
-      - ".github/scripts/**"
+      - ".github/scripts/resolve-toolchains.sh"
       - ".github/workflows/aionui.build.yml"
       - ".github/workflows/docker-release.yml"
   schedule:
@@ -52,7 +52,9 @@ jobs:
         id: toolchains
         env:
           GH_TOKEN: ${{ github.token }}
-        run: bash .github/scripts/resolve-toolchains.sh bun
+        run: |
+          bash -n .github/scripts/resolve-toolchains.sh
+          bash .github/scripts/resolve-toolchains.sh bun
       - name: Check startup script syntax
         run: |
           find common -type f -name '*.sh' -print0 | xargs -0 -r -n 1 bash -n
@@ -76,8 +78,8 @@ jobs:
           build_key="$(
             {
               printf '%s\n' "$version" "$commit" "$NODE_VERSION" "$BUN_VERSION"
-              find common .github/scripts -type f -print0 | LC_ALL=C sort -z | xargs -0 sha256sum
-              sha256sum aionui/Dockerfile aionui/entrypoint.sh \
+              find common -type f -print0 | LC_ALL=C sort -z | xargs -0 sha256sum
+              sha256sum .github/scripts/resolve-toolchains.sh aionui/Dockerfile aionui/entrypoint.sh \
                 .github/workflows/aionui.build.yml .github/workflows/docker-release.yml
             } | sha256sum | cut -d ' ' -f1
           )"
@@ -228,6 +230,10 @@ jobs:
     with:
       project: aionui
       check-numeric-user: true
+      numeric-user-mounts: |
+        /home/node
+        /opt/agent-cli
+        /data
       context: .
       check-command: |
         find /usr/local/lib/container-common -type f -name '*.sh' -print0 | xargs -0 -r -n 1 bash -n
@@ -247,5 +253,35 @@ jobs:
       build-key: ${{ needs.resolve.outputs.build_key }}
       security-rebuild: ${{ github.event_name == 'schedule' || github.event_name == 'workflow_dispatch' }}
       record-build: true
+      record-command: |
+        node --version
+        npm --version
+        bun --version
+        sha256sum /usr/local/bin/bun /usr/local/bin/aioncore
+        find /usr/local/share/build-images -type f -print -exec cat {} \;
+        dpkg-query -W
       check-startup: true
+      startup-timeout: 300
+      startup-command: |
+        docker run -d --network none \
+          -e AGENT_CLIS=none -e EXTRA_TOOLS=none -e PYTHON_PACKAGES=none \
+          -e CLI_UPDATE_INTERVAL=0 "$CHECK_IMAGE"
+      startup-check-command: |
+        docker exec "$CHECK_CONTAINER" /usr/local/bin/node --input-type=module -e '
+          const health = await fetch("http://127.0.0.1:25808/api/auth/status", { signal: AbortSignal.timeout(4000) });
+          if (!health.ok) throw new Error("AionUi health check failed");
+          const response = await fetch("http://127.0.0.1:25808/", { signal: AbortSignal.timeout(4000) });
+          if (!response.ok || !(await response.text()).toLowerCase().includes("<html")) throw new Error("Missing Web UI");
+        '
+        docker exec "$CHECK_CONTAINER" bash -ec '
+          cache_version="$(cat /usr/local/share/aionui/managed-node-version)"
+          architecture="$(/usr/local/bin/node -p process.arch)"
+          actual="$(/usr/local/bin/node -p process.versions.node)"
+          runtime="${AIONUI_DATA_DIR:-$HOME/.aionui-web}/runtime/node/node-v$cache_version-linux-$architecture"
+          test -L "$runtime"
+          test "$("$runtime/bin/node" -p process.versions.node)" = "$actual"
+          "$runtime/bin/npm" --version
+          "$runtime/bin/npx" --version
+        '
+        docker logs "$CHECK_CONTAINER" 2>&1 | grep -F 'managed runtime background preparation completed' >/dev/null
       publish: ${{ github.event_name != 'pull_request' && github.ref == format('refs/heads/{0}', github.event.repository.default_branch) }}

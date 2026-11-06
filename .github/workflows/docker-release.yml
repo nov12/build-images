@@ -16,18 +16,36 @@ on:
       check-numeric-user:
         type: boolean
         default: false
+      numeric-user-mounts:
+        type: string
+        default: ""
       check-ssh-server:
         type: boolean
         default: false
+      ssh-check-command:
+        type: string
+        default: ""
       check-startup:
         type: boolean
         default: false
+      startup-command:
+        type: string
+        default: ""
+      startup-check-command:
+        type: string
+        default: ""
+      startup-timeout:
+        type: number
+        default: 240
       security-rebuild:
         type: boolean
         default: false
       record-build:
         type: boolean
         default: false
+      record-command:
+        type: string
+        default: ""
       upstream-revision:
         type: string
         default: ""
@@ -87,12 +105,6 @@ jobs:
         uses: actions/checkout@v7
         with:
           persist-credentials: false
-      - name: Check version resolver syntax
-        if: inputs.record-build
-        run: bash -n .github/scripts/resolve-toolchains.sh
-      - name: Check runtime preparation syntax
-        if: inputs.record-build && inputs.project == 'paperclip'
-        run: node --check paperclip/prepare-runtime.mjs
       - name: Download build artifact
         if: inputs.build-artifact != ''
         uses: actions/download-artifact@v8
@@ -145,21 +157,27 @@ jobs:
         if: inputs.check-numeric-user
         env:
           CHECK_COMMAND: ${{ inputs.check-command }}
+          CHECK_USER_MOUNTS: ${{ inputs.numeric-user-mounts }}
         run: |
           set -euo pipefail
+          test -n "$CHECK_USER_MOUNTS"
           container=''
           trap '[[ -z "$container" ]] || { docker logs "$container"; docker rm -f "$container"; }' EXIT
           default_user="$(docker run --rm --entrypoint /usr/bin/env local/build:check -u LD_PRELOAD sh -c 'printf "%s:%s" "$(id -u)" "$(id -g)"')"
           for run_as in "$default_user" 12345:23456 23456:12345; do
             uid="${run_as%:*}" gid="${run_as#*:}"
+            mounts=()
+            while IFS= read -r directory; do
+              if [[ -n "$directory" ]]; then
+                [[ "$directory" == /* && "$directory" != *:* ]]
+                mounts+=(--tmpfs "$directory:uid=$uid,gid=$gid,mode=700")
+              fi
+            done <<< "$CHECK_USER_MOUNTS"
             # 使用当前用户可写的临时目录，不修改持久卷属主。
             container="$(docker run -d --network none --user "$run_as" --group-add 34567 \
-              --tmpfs "/home/node:uid=$uid,gid=$gid,mode=700" \
-              --tmpfs "/home/apple:uid=$uid,gid=$gid,mode=700" \
-              --tmpfs "/opt/agent-cli:uid=$uid,gid=$gid,mode=700" \
-              --tmpfs "/data:uid=$uid,gid=$gid,mode=700" \
+              "${mounts[@]}" \
               -e AGENT_CLIS=none -e EXTRA_TOOLS=none -e PYTHON_PACKAGES=none \
-              -e PASEO_PLUGINS=none -e CLI_UPDATE_INTERVAL=0 -e CHECK_COMMAND \
+              -e CLI_UPDATE_INTERVAL=0 -e CHECK_COMMAND \
               -e EXPECTED_UID="$uid" -e EXPECTED_GID="$gid" local/build:check bash -ec '
                 test "$(id -u)" = "$EXPECTED_UID"
                 test "$(id -g)" = "$EXPECTED_GID"
@@ -185,19 +203,16 @@ jobs:
       - name: Check offline service startup and shutdown
         if: inputs.check-startup
         env:
-          PROJECT: ${{ inputs.project }}
+          CHECK_IMAGE: local/build:check
+          STARTUP_COMMAND: ${{ inputs.startup-command }}
+          STARTUP_CHECK_COMMAND: ${{ inputs.startup-check-command }}
+          STARTUP_TIMEOUT: ${{ inputs.startup-timeout }}
         run: |
           set -euo pipefail
-          project="$PROJECT"
-          image=local/build:check
-          startup_timeout=240
-          case "$project" in
-            aionui) port=25808; health=/api/auth/status ;;
-            paseo) port=6767; health=/ ;;
-            paperclip) port=3100; health=/api/health; startup_timeout=600 ;;
-            *) printf 'Unsupported startup check: %s\n' "$project" >&2; exit 1 ;;
-          esac
-
+          test -n "$STARTUP_COMMAND"
+          test -n "$STARTUP_CHECK_COMMAND"
+          [[ "$STARTUP_TIMEOUT" =~ ^[0-9]+$ ]]
+          (( STARTUP_TIMEOUT > 0 ))
           container=''
           cleanup() {
             if [[ -n "$container" ]]; then
@@ -206,99 +221,40 @@ jobs:
             fi
           }
           trap cleanup EXIT
-          container="$(docker run -d --network none \
-            -e AGENT_CLIS=none -e EXTRA_TOOLS=none -e PYTHON_PACKAGES=none \
-            -e PASEO_PLUGINS=none -e PASEO_PASSWORD=offline-startup-check \
-            -e CLI_UPDATE_INTERVAL=0 -e PAPERCLIP_DEPLOYMENT_MODE=authenticated \
-            -e BETTER_AUTH_SECRET="$(openssl rand -hex 32)" \
-            -e PAPERCLIP_TOOL_ACTION_SIGNING_SECRET="$(openssl rand -hex 32)" \
-            -e PAPERCLIP_DEPLOYMENT_EXPOSURE=private "$image")"
-          deadline=$((SECONDS + startup_timeout))
-          until docker exec -e CHECK_PORT="$port" -e CHECK_HEALTH="$health" -e CHECK_PROJECT="$project" \
-            "$container" /usr/local/bin/node --input-type=module -e '
-              const response = await fetch(`http://127.0.0.1:${process.env.CHECK_PORT}${process.env.CHECK_HEALTH}`, { signal: AbortSignal.timeout(4000) });
-              if (!response.ok) process.exit(1);
-              if (process.env.CHECK_PROJECT === "paperclip" && (await response.json()).status !== "ok") process.exit(1);
-            ' 2>/dev/null; do
-            test "$(docker inspect --format '{{.State.Running}}' "$container")" = true
-            if (( SECONDS >= deadline )); then printf 'Startup timed out\n' >&2; exit 1; fi
+          container="$(bash -euo pipefail -c "$STARTUP_COMMAND")"
+          [[ "$container" =~ ^[a-f0-9]{64}$ ]]
+          export CHECK_CONTAINER="$container"
+          check_log="$RUNNER_TEMP/startup-check.log"
+          : > "$check_log"
+          deadline=$((SECONDS + STARTUP_TIMEOUT))
+          while true; do
+            remaining=$((deadline - SECONDS))
+            if (( remaining <= 0 )); then
+              cat "$check_log" >&2
+              printf 'Startup timed out\n' >&2
+              exit 1
+            fi
+            if timeout --kill-after=5s "${remaining}s" bash -euo pipefail -c "$STARTUP_CHECK_COMMAND" > "$check_log" 2>&1; then
+              cat "$check_log"
+              break
+            fi
+            if [[ "$(docker inspect --format '{{.State.Running}}' "$container")" != true ]]; then
+              cat "$check_log" >&2
+              exit 1
+            fi
             sleep 2
           done
-          docker exec -e CHECK_PORT="$port" "$container" /usr/local/bin/node --input-type=module -e '
-            const response = await fetch(`http://127.0.0.1:${process.env.CHECK_PORT}/`, { signal: AbortSignal.timeout(4000) });
-            if (!response.ok || !(await response.text()).toLowerCase().includes("<html")) throw new Error("Missing Web UI");
-          '
-          if [[ "$project" == paseo ]]; then
-            docker exec "$container" /usr/local/bin/node --input-type=module -e '
-              import { createRequire } from "node:module";
-              const require = createRequire("/opt/paseo/node_modules/@getpaseo/server/package.json");
-              const terminal = require("node-pty").spawn("/bin/sh", ["-c", "printf native-pty-ready"], { name: "xterm", cols: 80, rows: 24 });
-              let output = "";
-              const timer = setTimeout(() => { terminal.kill(); process.exit(1); }, 10000);
-              terminal.onData(data => { output += data; });
-              terminal.onExit(({ exitCode }) => { clearTimeout(timer); if (exitCode !== 0 || !output.includes("native-pty-ready")) process.exit(1); });
-            '
-          fi
-          if [[ "$project" == aionui ]]; then
-            docker exec "$container" bash -ec '
-              cache_version="$(cat /usr/local/share/aionui/managed-node-version)"
-              architecture="$(/usr/local/bin/node -p process.arch)"
-              actual="$(/usr/local/bin/node -p process.versions.node)"
-              runtime="${AIONUI_DATA_DIR:-$HOME/.aionui-web}/runtime/node/node-v$cache_version-linux-$architecture"
-              test -L "$runtime"
-              test "$("$runtime/bin/node" -p process.versions.node)" = "$actual"
-              "$runtime/bin/npm" --version
-              "$runtime/bin/npx" --version
-            '
-            deadline=$((SECONDS + 60))
-            until docker logs "$container" 2>&1 | grep -F 'managed runtime background preparation completed' >/dev/null; do
-              test "$(docker inspect --format '{{.State.Running}}' "$container")" = true
-              if (( SECONDS >= deadline )); then printf 'AionCore managed Node validation timed out\n' >&2; exit 1; fi
-              sleep 1
-            done
-          fi
           docker stop --time 60 "$container" >/dev/null
           test "$(docker inspect --format '{{.State.ExitCode}}' "$container")" != 137
       - name: Check SSH server
         if: inputs.check-ssh-server
+        env:
+          CHECK_IMAGE: local/build:check
+          SSH_CHECK_COMMAND: ${{ inputs.ssh-check-command }}
         run: |
           set -euo pipefail
-          container=''
-          key="$RUNNER_TEMP/container-ssh-check"
-          trap '[[ -z "$container" ]] || { docker logs "$container"; docker rm -f "$container"; }; rm -f "$key" "$key.pub"' EXIT
-          ssh-keygen -q -t ed25519 -N "" -f "$key"
-          public_key="$(cat "$key.pub")"
-          for run_as in 0:0 666:666 12345:23456; do
-            uid="${run_as%:*}" gid="${run_as#*:}"
-            container="$(docker run -d --network none --user "$run_as" \
-              --tmpfs "/home/apple:uid=$uid,gid=$gid,mode=700" \
-              --tmpfs "/config:uid=$uid,gid=$gid,mode=700" \
-              --tmpfs "/opt/agent-cli:uid=$uid,gid=$gid,mode=700" \
-              -e PUBLIC_KEY="$public_key" -e SSH_LISTEN_PORT=22222 \
-              -e AGENT_CLIS=none -e EXTRA_TOOLS=none -e PYTHON_PACKAGES=none \
-              -e CLI_UPDATE_INTERVAL=0 local/build:check)"
-            docker exec -i "$container" sh -c 'umask 077; cat > /tmp/client-key' < "$key"
-            # shellcheck disable=SC2016
-            login_user="$(timeout 30s docker exec "$container" bash -ec '
-              until (echo >/dev/tcp/127.0.0.1/22222) 2>/dev/null; do sleep 0.1; done
-              ssh -F /dev/null -p 22222 -i /tmp/client-key \
-                -o BatchMode=yes -o ConnectTimeout=5 \
-                -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null \
-                apple@127.0.0.1 '\''
-                  getent passwd "$(id -u)" >/dev/null
-                  ssh -G -F /dev/null example.invalid >/dev/null
-                  printf "%s:%s\n" "$(id -u)" "$(id -g)"
-                '\''
-            ')"
-            expected_user="$run_as"
-            if [[ "$run_as" == 0:0 ]]; then
-              expected_user=666:666
-              test "$(docker exec "$container" stat -c %u /config/ssh/ssh_host_ed25519_key)" = 0
-            fi
-            test "$login_user" = "$expected_user"
-            docker rm -f "$container" >/dev/null
-            container=''
-          done
+          test -n "$SSH_CHECK_COMMAND"
+          bash -euo pipefail -c "$SSH_CHECK_COMMAND"
       - name: Record resolved build and runtime
         if: inputs.record-build
         env:
@@ -306,6 +262,7 @@ jobs:
           BUILD_DIGEST: ${{ steps.image.outputs.digest }}
           UPSTREAM_REVISION: ${{ inputs.upstream-revision }}
           SECURITY_REBUILD: ${{ inputs.security-rebuild }}
+          RECORD_COMMAND: ${{ inputs.record-command }}
         run: |
           set -euo pipefail
           mkdir -p _build-record
@@ -315,22 +272,8 @@ jobs:
           printf 'repository=%s\ncommit=%s\nupstream_commit=%s\nrun=%s\nsecurity_rebuild=%s\n' \
             "$GITHUB_REPOSITORY" "$GITHUB_SHA" "$UPSTREAM_REVISION" "$GITHUB_RUN_ID" "$SECURITY_REBUILD" > _build-record/source.txt
           docker image inspect local/build:check > _build-record/image.json
-          docker run --rm --network none --entrypoint /usr/bin/env local/build:check -u LD_PRELOAD sh -ec '
-            node --version; npm --version
-            if test -d /app; then cd /app; fi
-            for tool in bun corepack pnpm python task; do
-              if command -v "$tool" >/dev/null; then "$tool" --version; fi
-            done
-            if command -v go >/dev/null; then go version; fi
-            if test -f /app/.build/runtime.json; then cat /app/.build/runtime.json; fi
-            if test -f /opt/paperclip-runner/provider-pack/provider-pack.json; then cat /opt/paperclip-runner/provider-pack/provider-pack.json; fi
-            if test -f /opt/paseo/package-lock.json; then sha256sum /opt/paseo/package-lock.json; fi
-            for binary in /usr/local/bin/bun /usr/local/bin/aioncore /opt/t3/t3; do
-              if test -f "$binary"; then sha256sum "$binary"; fi
-            done
-            if test -d /usr/local/share/build-images; then find /usr/local/share/build-images -type f -print -exec cat {} \;; fi
-            dpkg-query -W
-          ' > _build-record/runtime.txt
+          test -n "$RECORD_COMMAND"
+          docker run --rm --network none --entrypoint /usr/bin/env local/build:check -u LD_PRELOAD sh -ec "$RECORD_COMMAND" > _build-record/runtime.txt
           sha256sum _build-record/* > _build-record/SHA256SUMS
           printf 'Verified image size (uncompressed bytes): %s\n' \
             "$(docker image inspect local/build:check --format '{{.Size}}')" >> "$GITHUB_STEP_SUMMARY"
