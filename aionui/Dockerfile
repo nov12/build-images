@@ -1,7 +1,10 @@
 # syntax=docker/dockerfile:1
 
+ARG NODE_VERSION=lts
+ARG BUN_IMAGE=oven/bun:slim
+
 # 校验预编译 WebUI 服务端产物
-FROM oven/bun:1.4.4-slim AS web-runtime
+FROM ${BUN_IMAGE} AS web-runtime
 
 COPY --from=web-assets /server/webui.js /tmp/webui.js
 
@@ -9,7 +12,7 @@ RUN test -s /tmp/webui.js \
     && bun --version >/dev/null
 
 # 运行环境
-FROM node:24-trixie-slim AS runtime
+FROM node:${NODE_VERSION}-trixie-slim AS runtime-system
 
 ARG AIONCORE_NODE_VERSION
 ARG USER_UID=666
@@ -17,6 +20,7 @@ ARG USER_GID=666
 
 # 仅安装 AionCore、Agent CLI 和入口脚本必需的系统组件
 RUN apt-get update \
+    && DEBIAN_FRONTEND=noninteractive apt-get upgrade -y --no-install-recommends \
     && apt-get install -y --no-install-recommends \
         bash \
         ca-certificates \
@@ -64,6 +68,7 @@ WORKDIR /app
 COPY --from=web-runtime /usr/local/bin/bun /usr/local/bin/bun
 COPY --from=web-runtime /tmp/webui.js /app/scripts/webui.js
 COPY --from=core-bin --chmod=755 /aioncore /usr/local/bin/aioncore
+COPY --from=core-bin /SHA256SUMS /usr/local/share/build-images/aioncore-SHA256SUMS
 
 # 仅复制静态资源，不引入 Electron、源码及 node_modules
 COPY --from=web-assets /renderer/ /app/out/renderer/

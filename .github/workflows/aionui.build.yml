@@ -6,6 +6,7 @@ on:
     paths:
       - "aionui/**"
       - "common/**"
+      - ".github/scripts/**"
       - ".github/workflows/aionui.build.yml"
       - ".github/workflows/docker-release.yml"
   push:
@@ -13,6 +14,7 @@ on:
     paths:
       - "aionui/**"
       - "common/**"
+      - ".github/scripts/**"
       - ".github/workflows/aionui.build.yml"
       - ".github/workflows/docker-release.yml"
   schedule:
@@ -32,18 +34,25 @@ jobs:
     timeout-minutes: 10
     outputs:
       version: ${{ steps.resolve.outputs.version }}
-      build: ${{ steps.decision.outputs.build || steps.resolve.outputs.build }}
+      build: ${{ steps.resolve.outputs.build }}
       args: ${{ steps.resolve.outputs.args }}
       build_key: ${{ steps.resolve.outputs.build_key }}
+      node_version: ${{ steps.toolchains.outputs.node_version }}
       tag: ${{ steps.resolve.outputs.tag }}
       sha: ${{ steps.upstream.outputs.commit }}
       core_tag: ${{ steps.metadata.outputs.core_tag }}
-      node_version: ${{ steps.metadata.outputs.node_version }}
+      managed_node_version: ${{ steps.metadata.outputs.node_version }}
+      bun_version: ${{ steps.toolchains.outputs.bun_version }}
     steps:
       - name: Checkout
         uses: actions/checkout@v7
         with:
           persist-credentials: false
+      - name: Resolve current LTS toolchains
+        id: toolchains
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: bash .github/scripts/resolve-toolchains.sh bun
       - name: Check startup script syntax
         run: |
           find common -type f -name '*.sh' -print0 | xargs -0 -r -n 1 bash -n
@@ -53,16 +62,21 @@ jobs:
         id: resolve
         env:
           GH_TOKEN: ${{ github.token }}
+          NODE_VERSION: ${{ steps.toolchains.outputs.node_version }}
+          BUN_VERSION: ${{ steps.toolchains.outputs.bun_version }}
         run: |
           set -euo pipefail
           tag="$(gh api repos/iOfficeAI/AionUi/releases/latest --jq .tag_name)"
           [[ "$tag" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]]
+          commit="$(gh api "repos/iOfficeAI/AionUi/commits/$tag" --jq .sha)"
+          [[ "$commit" =~ ^[a-f0-9]{40}$ ]]
           echo "tag=$tag" >> "$GITHUB_OUTPUT"
+          echo "commit=$commit" >> "$GITHUB_OUTPUT"
           version="${tag#v}"
           build_key="$(
             {
-              printf '%s\n' "$version"
-              find common -type f -print0 | LC_ALL=C sort -z | xargs -0 sha256sum
+              printf '%s\n' "$version" "$commit" "$NODE_VERSION" "$BUN_VERSION"
+              find common .github/scripts -type f -print0 | LC_ALL=C sort -z | xargs -0 sha256sum
               sha256sum aionui/Dockerfile aionui/entrypoint.sh \
                 .github/workflows/aionui.build.yml .github/workflows/docker-release.yml
             } | sha256sum | cut -d ' ' -f1
@@ -70,35 +84,12 @@ jobs:
           echo "build_key=$build_key" >> "$GITHUB_OUTPUT"
           echo "version=$version" >> "$GITHUB_OUTPUT"
           echo 'build=true' >> "$GITHUB_OUTPUT"
-      - name: Login for release lookup
-        if: github.event_name == 'schedule'
-        uses: docker/login-action@v4
-        with:
-          registry: ghcr.io
-          username: ${{ github.actor }}
-          password: ${{ github.token }}
-      - name: Skip existing multi-platform release
-        id: decision
-        if: github.event_name == 'schedule'
-        env:
-          VERSION: ${{ steps.resolve.outputs.version }}
-          BUILD_KEY: ${{ steps.resolve.outputs.build_key }}
-        run: |
-          set -euo pipefail
-          image="ghcr.io/${GITHUB_REPOSITORY_OWNER,,}/aionui"
-          if docker buildx imagetools inspect "$image:$VERSION" --raw > manifest.json 2>/dev/null && \
-             jq -e --arg key "$BUILD_KEY" '
-               .annotations["io.build-images.build-key"] == $key and
-               ([.manifests[] | .platform | "\(.os)/\(.architecture)"] | sort == ["linux/amd64", "linux/arm64"])
-             ' manifest.json; then
-            echo 'build=false' >> "$GITHUB_OUTPUT"
-          fi
       - name: Checkout upstream release
         id: upstream
         uses: actions/checkout@v7
         with:
           repository: iOfficeAI/AionUi
-          ref: ${{ steps.resolve.outputs.tag }}
+          ref: ${{ steps.resolve.outputs.commit }}
           path: _upstream
           persist-credentials: false
       - name: Resolve matching AionCore
@@ -124,9 +115,12 @@ jobs:
           set -euo pipefail
           file=_core/crates/aionui-runtime/src/node_runtime/managed.rs
           version="$(sed -nE 's/^const MANAGED_NODE_VERSION: &str = "([0-9.]+)";/\1/p' "$file")"
-          [[ "$version" =~ ^24\.[0-9]+\.[0-9]+$ ]]
+          [[ "$version" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]
           grep -q 'runtime_from_root(root, ResolvedNodeSource::Managed)' "$file"
           grep -q 'validate_runtime(runtime, None)' "$file"
+          grep -q 'runtime.version = node_version;' _core/crates/aionui-runtime/src/node_runtime/mod.rs
+          printf 'AionUi commit: %s; AionCore %s commit: %s; managed cache key (not a version constraint): %s\n' \
+            "$(git -C _upstream rev-parse HEAD)" "$CORE_TAG" "$(git -C _core rev-parse HEAD)" "$version" >> "$GITHUB_STEP_SUMMARY"
           echo "core_tag=$CORE_TAG" >> "$GITHUB_OUTPUT"
           echo "node_version=$version" >> "$GITHUB_OUTPUT"
 
@@ -145,7 +139,7 @@ jobs:
         uses: actions/cache@v6
         with:
           path: _web_assets
-          key: aionui-web-${{ needs.resolve.outputs.sha }}-bun1.4.4-${{ hashFiles('aionui/Dockerfile', '.github/workflows/aionui.build.yml') }}
+          key: aionui-web-${{ needs.resolve.outputs.sha }}-node${{ needs.resolve.outputs.node_version }}-bun${{ needs.resolve.outputs.bun_version }}-${{ hashFiles('aionui/Dockerfile', '.github/workflows/aionui.build.yml') }}
       - name: Checkout upstream source
         if: steps.cache.outputs.cache-hit != 'true'
         uses: actions/checkout@v7
@@ -158,13 +152,13 @@ jobs:
         if: steps.cache.outputs.cache-hit != 'true'
         uses: actions/setup-node@v7
         with:
-          node-version: "24"
+          node-version: ${{ needs.resolve.outputs.node_version }}
           package-manager-cache: false
       - name: Set up Bun
         if: steps.cache.outputs.cache-hit != 'true'
         uses: oven-sh/setup-bun@v2
         with:
-          bun-version: "1.4.4"
+          bun-version: ${{ needs.resolve.outputs.bun_version }}
       - name: Build WebUI once
         if: steps.cache.outputs.cache-hit != 'true'
         working-directory: _upstream
@@ -207,6 +201,7 @@ jobs:
               test "$(wc -l < selected.sha256)" -eq 1
               sha256sum -c selected.sha256
               tar -xzf "$archive" -C "../../_assets/$arch/core" aioncore
+              cp selected.sha256 "../../_assets/$arch/core/SHA256SUMS"
             )
             chmod 755 "_assets/$arch/core/aioncore"
             cp -a _web_assets "_assets/$arch/web"
@@ -244,6 +239,13 @@ jobs:
         core-bin=./_build/core
       upstream-repository: iOfficeAI/AionUi
       version: ${{ needs.resolve.outputs.version }}
-      build-args: AIONCORE_NODE_VERSION=${{ needs.resolve.outputs.node_version }}
+      build-args: |
+        NODE_VERSION=${{ needs.resolve.outputs.node_version }}
+        BUN_IMAGE=oven/bun:${{ needs.resolve.outputs.bun_version }}-slim
+        AIONCORE_NODE_VERSION=${{ needs.resolve.outputs.managed_node_version }}
+      upstream-revision: ${{ needs.resolve.outputs.sha }}
       build-key: ${{ needs.resolve.outputs.build_key }}
+      security-rebuild: ${{ github.event_name == 'schedule' || github.event_name == 'workflow_dispatch' }}
+      record-build: true
+      check-startup: true
       publish: ${{ github.event_name != 'pull_request' && github.ref == format('refs/heads/{0}', github.event.repository.default_branch) }}

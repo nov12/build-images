@@ -1,6 +1,7 @@
 services:
   dev-go:
     image: ghcr.io/nov12/dev-go:latest
+    pull_policy: always
     container_name: dev-go
     restart: unless-stopped
 

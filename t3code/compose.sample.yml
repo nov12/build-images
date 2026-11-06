@@ -1,6 +1,7 @@
 services:
   t3code:
     image: ghcr.io/nov12/t3code:latest
+    pull_policy: always
     container_name: t3code
     restart: unless-stopped
 

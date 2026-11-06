@@ -1,7 +1,9 @@
 # syntax=docker/dockerfile:1
 
+ARG NODE_VERSION=lts
+
 # 安装官方 npm 发行包，包含 daemon 和 Web UI
-FROM node:24-trixie-slim AS paseo-builder
+FROM node:${NODE_VERSION}-trixie-slim AS paseo-builder
 
 ARG PASEO_VERSION
 
@@ -21,21 +23,26 @@ RUN apt-get update \
 RUN set -eux; \
     test -n "$PASEO_VERSION"; \
     npm install --prefix /opt/paseo \
-        --no-save --no-package-lock \
+        --save-exact \
         --omit=dev --include=optional \
         --no-audit --no-fund \
         "@getpaseo/cli@$PASEO_VERSION"; \
     test -s /opt/paseo/node_modules/@getpaseo/server/dist/server/web-ui/index.html; \
+    test -s /opt/paseo/package-lock.json; \
+    rm -rf /opt/paseo/node_modules/node-pty/src \
+        /opt/paseo/node_modules/node-pty/third_party \
+        /opt/paseo/node_modules/node-pty/build/Release/obj.target; \
     npm cache clean --force
 
 # 运行环境
-FROM node:24-trixie-slim
+FROM node:${NODE_VERSION}-trixie-slim AS runtime-system
 
 ARG USER_UID=666
 ARG USER_GID=666
 
 # 仅保留 Paseo、终端和共用 Agent CLI 管理脚本所需组件
 RUN apt-get update \
+    && DEBIAN_FRONTEND=noninteractive apt-get upgrade -y --no-install-recommends \
     && apt-get install -y --no-install-recommends \
         bash \
         ca-certificates \

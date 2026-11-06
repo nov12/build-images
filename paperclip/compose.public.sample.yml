@@ -4,6 +4,7 @@
 services:
   paperclip:
     image: "${PAPERCLIP_IMAGE:-ghcr.io/nov12/paperclip:latest}"
+    pull_policy: always
     container_name: paperclip
     restart: unless-stopped
     user: "${PUID:-666}:${PGID:-666}"

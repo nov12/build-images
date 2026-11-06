@@ -1,6 +1,7 @@
 services:
   aionui:
     image: ghcr.io/nov12/aionui:latest
+    pull_policy: always
     container_name: aionui
     hostname: aionui
     restart: unless-stopped

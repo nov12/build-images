@@ -1,8 +1,12 @@
 # syntax=docker/dockerfile:1
 
+ARG NODE_VERSION=lts
+
 FROM rust:1-trixie AS rust-toolchain
 
-FROM node:24-trixie-slim AS paperclip-builder
+FROM node:${NODE_VERSION}-trixie-slim AS paperclip-builder
+
+ARG COREPACK_VERSION=latest
 
 RUN apt-get update \
     && apt-get install -y --no-install-recommends \
@@ -14,7 +18,10 @@ RUN apt-get update \
         pkg-config \
         python3 \
     && rm -rf /var/lib/apt/lists/* \
-    && corepack enable
+    && rm -f /usr/local/bin/yarn /usr/local/bin/yarnpkg \
+    && npm install --global --engine-strict "corepack@$COREPACK_VERSION" \
+    && corepack enable \
+    && npm cache clean --force
 
 # 直接复用官方 Rust 工具链；所需编译器版本仍由上游 rust-toolchain.toml 决定。
 COPY --from=rust-toolchain /usr/local/cargo/ /usr/local/cargo/
@@ -37,7 +44,9 @@ WORKDIR /app
 ADD https://github.com/paperclipai/paperclip.git#${PAPERCLIP_COMMIT} /app
 
 # 与上游容器一致，先同步锁文件元数据，再以 frozen lockfile 安装。
-RUN pnpm install --resolution-only --ignore-scripts --no-frozen-lockfile \
+RUN mkdir -p /usr/local/share/build-images \
+    && sha256sum pnpm-lock.yaml > /usr/local/share/build-images/paperclip-source-lock.sha256 \
+    && pnpm install --resolution-only --ignore-scripts --no-frozen-lockfile \
     && pnpm install --frozen-lockfile
 
 ENV PAPERCLIP_BUILD_COMMIT=${PAPERCLIP_COMMIT} \
@@ -58,12 +67,14 @@ RUN PAPERCLIP_RUNNER_SOURCE_REVISION="$PAPERCLIP_COMMIT" \
         node packages/paperclip-runner/scripts/build-provider-pack.mjs /provider-pack \
     && chmod -R a+rX /provider-pack
 
-FROM node:24-trixie-slim
+FROM node:${NODE_VERSION}-trixie-slim AS runtime-system
 
+ARG COREPACK_VERSION=latest
 ARG USER_UID=666
 ARG USER_GID=666
 
 RUN apt-get update \
+    && DEBIAN_FRONTEND=noninteractive apt-get upgrade -y --no-install-recommends \
     && apt-get install -y --no-install-recommends \
         bash \
         ca-certificates \
@@ -93,7 +104,10 @@ RUN apt-get update \
         util-linux \
         zlib1g \
     && rm -rf /var/lib/apt/lists/* \
-    && corepack enable
+    && rm -f /usr/local/bin/yarn /usr/local/bin/yarnpkg \
+    && npm install --global --engine-strict "corepack@$COREPACK_VERSION" \
+    && corepack enable \
+    && npm cache clean --force
 
 # 与 Paseo 一致，默认非 root 运行，挂载目录由调用方准备好 UID/GID 权限。
 RUN set -eux; \
@@ -110,6 +124,7 @@ RUN set -eux; \
 COPY --from=paperclip-builder --chown=${USER_UID}:${USER_GID} /app/ /app/
 COPY --from=paperclip-builder --chown=${USER_UID}:${USER_GID} /opt/corepack/ /opt/corepack/
 COPY --from=paperclip-builder /provider-pack/ /opt/paperclip-runner/provider-pack/
+COPY --from=paperclip-builder /usr/local/share/build-images/ /usr/local/share/build-images/
 # 与 Paseo 一致，私有入口调用公共初始化，再交接固定运行时启动应用。
 COPY --chmod=755 common/ /usr/local/lib/container-common/
 COPY --chmod=755 paperclip/entrypoint.sh /usr/local/lib/paperclip/entrypoint.sh

@@ -1,7 +1,9 @@
 # syntax=docker/dockerfile:1
 
+ARG NODE_VERSION=lts
+
 # 下载并校验官方 T3 Code
-FROM --platform=$BUILDPLATFORM alpine:3.22 AS t3-builder
+FROM --platform=$BUILDPLATFORM alpine:3 AS t3-builder
 
 RUN apk add --no-cache \
     ca-certificates \
@@ -41,13 +43,14 @@ RUN set -eux; \
         /opt/t3/node_modules/node-pty/third_party
 
 # 运行环境
-FROM node:24-trixie-slim
+FROM node:${NODE_VERSION}-trixie-slim AS runtime-system
 
 ARG USER_UID=666
 ARG USER_GID=666
 
 # 只安装运行所需工具
 RUN apt-get update \
+    && DEBIAN_FRONTEND=noninteractive apt-get upgrade -y --no-install-recommends \
     && apt-get install -y --no-install-recommends \
         bash \
         ca-certificates \
@@ -86,6 +89,7 @@ RUN set -eux; \
 
 # 只复制 T3 的正式发行程序
 COPY --from=t3-builder /opt/t3/ /opt/t3/
+COPY --from=t3-builder /tmp/download/SHA256SUMS /usr/local/share/build-images/t3-SHA256SUMS
 
 # 构建期检查发行程序能否启动
 RUN /opt/t3/t3 --help >/dev/null

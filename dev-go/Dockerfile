@@ -2,7 +2,7 @@
 
 ARG PYTHON_VERSION=3
 ARG GO_VERSION=1
-ARG NODE_VERSION=current
+ARG NODE_VERSION=lts
 
 # 准备 Go 工具链
 FROM golang:${GO_VERSION}-trixie AS go-sdk
@@ -17,10 +17,10 @@ RUN rm -rf \
 FROM python:${PYTHON_VERSION}-slim-trixie AS python-runtime
 
 # 运行环境，使用官方 Node.js 稳定版基础镜像
-FROM node:${NODE_VERSION}-trixie-slim
+FROM node:${NODE_VERSION}-trixie-slim AS runtime-system
 
 ARG TARGETARCH
-ARG TASK_VERSION=v3.54.0
+ARG TASK_VERSION
 
 ENV GOPATH=/go \
     GOTOOLCHAIN=local \
@@ -40,6 +40,7 @@ COPY --from=python-runtime /usr/local/ /usr/local/
 # 安装 Python 动态库、SSH 和 Agent CLI 所需工具
 RUN set -eux; \
     apt-get update; \
+    DEBIAN_FRONTEND=noninteractive apt-get upgrade -y --no-install-recommends; \
     DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends \
         ca-certificates \
         curl \
@@ -80,7 +81,10 @@ RUN set -eux; \
     fi; \
     rm -rf /home/node; \
     \
-    test -n "$TASK_VERSION"; \
+    if [ -z "$TASK_VERSION" ]; then \
+        TASK_VERSION="$(curl -fsSL --retry 3 https://api.github.com/repos/go-task/task/releases/latest | jq -er 'select(.draft == false and .prerelease == false) | .tag_name')"; \
+    fi; \
+    printf '%s\n' "$TASK_VERSION" | grep -Eq '^v[0-9]+\.[0-9]+\.[0-9]+$'; \
     TASK_ARCHIVE="task_linux_${TARGETARCH}.tar.gz"; \
     curl -fsSL --retry 3 \
         "https://github.com/go-task/task/releases/download/${TASK_VERSION}/${TASK_ARCHIVE}" \
@@ -90,8 +94,11 @@ RUN set -eux; \
         -o /tmp/task_checksums.txt; \
     cd /tmp; \
     TASK_SHA256="$(awk -v file="$TASK_ARCHIVE" '$2 == file {print $1}' task_checksums.txt)"; \
-    test -n "$TASK_SHA256"; \
+    test "$(printf '%s\n' "$TASK_SHA256" | wc -l)" -eq 1; \
+    test "${#TASK_SHA256}" -eq 64; \
     echo "${TASK_SHA256}  ${TASK_ARCHIVE}" | sha256sum -c -; \
+    mkdir -p /usr/local/share/build-images; \
+    printf '%s  %s\n' "$TASK_SHA256" "$TASK_ARCHIVE" > /usr/local/share/build-images/task-SHA256SUMS; \
     tar -xzf "$TASK_ARCHIVE" task; \
     install -m 755 task /usr/local/bin/task; \
     rm -rf /tmp/task /tmp/task_checksums.txt "/tmp/${TASK_ARCHIVE}"; \

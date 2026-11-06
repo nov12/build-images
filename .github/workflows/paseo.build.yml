@@ -6,6 +6,7 @@ on:
     paths:
       - "paseo/**"
       - "common/**"
+      - ".github/scripts/**"
       - ".github/workflows/paseo.build.yml"
       - ".github/workflows/docker-release.yml"
   push:
@@ -13,6 +14,7 @@ on:
     paths:
       - "paseo/**"
       - "common/**"
+      - ".github/scripts/**"
       - ".github/workflows/paseo.build.yml"
       - ".github/workflows/docker-release.yml"
   schedule:
@@ -32,14 +34,21 @@ jobs:
     timeout-minutes: 10
     outputs:
       version: ${{ steps.resolve.outputs.version }}
-      build: ${{ steps.decision.outputs.build || steps.resolve.outputs.build }}
+      build: ${{ steps.resolve.outputs.build }}
       args: ${{ steps.resolve.outputs.args }}
       build_key: ${{ steps.resolve.outputs.build_key }}
+      node_version: ${{ steps.toolchains.outputs.node_version }}
+      upstream_commit: ${{ steps.resolve.outputs.commit }}
     steps:
       - name: Checkout
         uses: actions/checkout@v7
         with:
           persist-credentials: false
+      - name: Resolve current LTS toolchains
+        id: toolchains
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: bash .github/scripts/resolve-toolchains.sh
       - name: Check startup script syntax
         run: |
           find common -type f -name '*.sh' -print0 | xargs -0 -r -n 1 bash -n
@@ -50,16 +59,22 @@ jobs:
         id: resolve
         env:
           GH_TOKEN: ${{ github.token }}
+          NODE_VERSION: ${{ steps.toolchains.outputs.node_version }}
         run: |
           set -euo pipefail
           tag="$(gh api repos/getpaseo/paseo/releases/latest --jq .tag_name)"
           [[ "$tag" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]]
+          commit="$(gh api "repos/getpaseo/paseo/commits/$tag" --jq .sha)"
+          [[ "$commit" =~ ^[a-f0-9]{40}$ ]]
+          echo "commit=$commit" >> "$GITHUB_OUTPUT"
+          printf 'Source release %s commit: %s\n' "$tag" "$commit" >> "$GITHUB_STEP_SUMMARY"
           version="${tag#v}"
           test "$(npm view "@getpaseo/cli@$version" version)" = "$version"
+          npm view "@getpaseo/cli@$version" version dist.integrity --json >> "$GITHUB_STEP_SUMMARY"
           build_key="$(
             {
-              printf '%s\n' "$version"
-              find common -type f -print0 | LC_ALL=C sort -z | xargs -0 sha256sum
+              printf '%s\n' "$version" "$commit" "$NODE_VERSION"
+              find common .github/scripts -type f -print0 | LC_ALL=C sort -z | xargs -0 sha256sum
               sha256sum paseo/Dockerfile paseo/entrypoint.sh paseo/plugins.mjs \
                 .github/workflows/paseo.build.yml .github/workflows/docker-release.yml
             } | sha256sum | cut -d ' ' -f1
@@ -70,29 +85,6 @@ jobs:
             echo "build_key=$build_key"
             echo 'build=true'
           } >> "$GITHUB_OUTPUT"
-      - name: Login for release lookup
-        if: github.event_name == 'schedule'
-        uses: docker/login-action@v4
-        with:
-          registry: ghcr.io
-          username: ${{ github.actor }}
-          password: ${{ github.token }}
-      - name: Skip unchanged multi-platform release
-        id: decision
-        if: github.event_name == 'schedule'
-        env:
-          VERSION: ${{ steps.resolve.outputs.version }}
-          BUILD_KEY: ${{ steps.resolve.outputs.build_key }}
-        run: |
-          set -euo pipefail
-          image="ghcr.io/${GITHUB_REPOSITORY_OWNER,,}/paseo"
-          if docker buildx imagetools inspect "$image:$VERSION" --raw > manifest.json 2>/dev/null && \
-             jq -e --arg key "$BUILD_KEY" '
-               .annotations["io.build-images.build-key"] == $key and
-               ([.manifests[] | .platform | "\(.os)/\(.architecture)"] | sort == ["linux/amd64", "linux/arm64"])
-             ' manifest.json; then
-            echo 'build=false' >> "$GITHUB_OUTPUT"
-          fi
 
   release:
     needs: resolve
@@ -106,9 +98,15 @@ jobs:
         bash -n /usr/local/lib/paseo/entrypoint.sh
         AGENT_CLIS=none PASEO_PLUGINS=none CLI_UPDATE_INTERVAL=0 /usr/local/lib/paseo/entrypoint.sh paseo --version
       context: .
+      upstream-revision: ${{ needs.resolve.outputs.upstream_commit }}
       upstream-repository: getpaseo/paseo
       upstream-version-prefix: paseo-
       version: ${{ needs.resolve.outputs.version }}
-      build-args: ${{ needs.resolve.outputs.args }}
+      build-args: |
+        NODE_VERSION=${{ needs.resolve.outputs.node_version }}
+        ${{ needs.resolve.outputs.args }}
       build-key: ${{ needs.resolve.outputs.build_key }}
+      security-rebuild: ${{ github.event_name == 'schedule' || github.event_name == 'workflow_dispatch' }}
+      record-build: true
+      check-startup: true
       publish: ${{ github.event_name != 'pull_request' && github.ref == format('refs/heads/{0}', github.event.repository.default_branch) }}

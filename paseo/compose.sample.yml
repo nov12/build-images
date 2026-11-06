@@ -1,6 +1,7 @@
 services:
   paseo:
     image: ghcr.io/nov12/paseo:latest
+    pull_policy: always
     container_name: paseo
     restart: unless-stopped
 

@@ -6,6 +6,7 @@ on:
     paths:
       - "dev-go/**"
       - "common/**"
+      - ".github/scripts/**"
       - ".github/workflows/dev-go.build.yml"
       - ".github/workflows/docker-release.yml"
   push:
@@ -13,6 +14,7 @@ on:
     paths:
       - "dev-go/**"
       - "common/**"
+      - ".github/scripts/**"
       - ".github/workflows/dev-go.build.yml"
       - ".github/workflows/docker-release.yml"
   schedule:
@@ -32,14 +34,20 @@ jobs:
     timeout-minutes: 10
     outputs:
       version: ${{ steps.resolve.outputs.version }}
-      build: ${{ steps.decision.outputs.build || steps.resolve.outputs.build }}
+      build: ${{ steps.resolve.outputs.build }}
       args: ${{ steps.resolve.outputs.args }}
       build_key: ${{ steps.resolve.outputs.build_key }}
+      node_version: ${{ steps.toolchains.outputs.node_version }}
     steps:
       - name: Checkout
         uses: actions/checkout@v7
         with:
           persist-credentials: false
+      - name: Resolve current LTS toolchains
+        id: toolchains
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: bash .github/scripts/resolve-toolchains.sh
       - name: Check startup script syntax
         run: |
           find common -type f -name '*.sh' -print0 | xargs -0 -r -n 1 bash -n
@@ -49,6 +57,7 @@ jobs:
         id: resolve
         env:
           GH_TOKEN: ${{ github.token }}
+          NODE_VERSION: ${{ steps.toolchains.outputs.node_version }}
         run: |
           set -euo pipefail
           curl -fsSL --retry 3 --max-time 30 'https://go.dev/dl/?mode=json' > "$RUNNER_TEMP/go.json"
@@ -56,11 +65,6 @@ jobs:
             [.[] | select(.stable == true) | .version | ltrimstr("go")]
             | sort_by(split(".") | map(tonumber)) | last
           ' "$RUNNER_TEMP/go.json")"
-          curl -fsSL --retry 3 --max-time 30 https://nodejs.org/dist/index.json > "$RUNNER_TEMP/node.json"
-          NODE_VERSION="$(jq -er '
-            [.[] | .version | select(test("^v[0-9]+\\.[0-9]+\\.[0-9]+$"))]
-            | sort_by(ltrimstr("v") | split(".") | map(tonumber)) | last | ltrimstr("v")
-          ' "$RUNNER_TEMP/node.json")"
           curl -fsSL --retry 3 --max-time 30 \
             'https://www.python.org/api/v2/downloads/release/?is_published=true&pre_release=false' > "$RUNNER_TEMP/python.json"
           PYTHON_VERSION="$(jq -er '
@@ -75,7 +79,7 @@ jobs:
           build_key="$(
             {
               printf '%s\n' "$PYTHON_VERSION" "$GO_VERSION" "$NODE_VERSION" "$task_version"
-              find common -type f -print0 | LC_ALL=C sort -z | xargs -0 sha256sum
+              find common .github/scripts -type f -print0 | LC_ALL=C sort -z | xargs -0 sha256sum
               sha256sum dev-go/Dockerfile dev-go/entrypoint.sh \
                 .github/workflows/dev-go.build.yml .github/workflows/docker-release.yml
             } | sha256sum | cut -d ' ' -f1
@@ -84,7 +88,6 @@ jobs:
             echo 'args<<BUILD_ARGS'
             echo "PYTHON_VERSION=$PYTHON_VERSION"
             echo "GO_VERSION=$GO_VERSION"
-            echo "NODE_VERSION=$NODE_VERSION"
             echo "TASK_VERSION=$task_version"
             echo 'BUILD_ARGS'
             echo "version=go-$GO_VERSION"
@@ -92,29 +95,6 @@ jobs:
             echo 'build=true'
           } >> "$GITHUB_OUTPUT"
           printf 'Resolved Go %s, Node %s, Python %s, Task %s\n' "$GO_VERSION" "$NODE_VERSION" "$PYTHON_VERSION" "$task_version"
-      - name: Login for release lookup
-        if: github.event_name == 'schedule'
-        uses: docker/login-action@v4
-        with:
-          registry: ghcr.io
-          username: ${{ github.actor }}
-          password: ${{ github.token }}
-      - name: Skip unchanged multi-platform release
-        id: decision
-        if: github.event_name == 'schedule'
-        env:
-          VERSION: ${{ steps.resolve.outputs.version }}
-          BUILD_KEY: ${{ steps.resolve.outputs.build_key }}
-        run: |
-          set -euo pipefail
-          image="ghcr.io/${GITHUB_REPOSITORY_OWNER,,}/dev-go"
-          if docker buildx imagetools inspect "$image:$VERSION" --raw > manifest.json 2>/dev/null && \
-             jq -e --arg key "$BUILD_KEY" '
-               .annotations["io.build-images.build-key"] == $key and
-               ([.manifests[] | .platform | "\(.os)/\(.architecture)"] | sort == ["linux/amd64", "linux/arm64"])
-             ' manifest.json; then
-            echo 'build=false' >> "$GITHUB_OUTPUT"
-          fi
 
   release:
     needs: resolve
@@ -130,6 +110,10 @@ jobs:
         AGENT_CLIS=none CLI_UPDATE_INTERVAL=0 /usr/local/lib/container-common/entrypoint.sh sh -ec 'python --version; go version; node --version; npm --version; task --version'
       context: .
       version: ${{ needs.resolve.outputs.version }}
-      build-args: ${{ needs.resolve.outputs.args }}
+      build-args: |
+        NODE_VERSION=${{ needs.resolve.outputs.node_version }}
+        ${{ needs.resolve.outputs.args }}
       build-key: ${{ needs.resolve.outputs.build_key }}
+      security-rebuild: ${{ github.event_name == 'schedule' || github.event_name == 'workflow_dispatch' }}
+      record-build: true
       publish: ${{ github.event_name != 'pull_request' && github.ref == format('refs/heads/{0}', github.event.repository.default_branch) }}
