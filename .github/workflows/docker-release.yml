@@ -90,6 +90,9 @@ jobs:
       - name: Check version resolver syntax
         if: inputs.record-build
         run: bash -n .github/scripts/resolve-toolchains.sh
+      - name: Check runtime preparation syntax
+        if: inputs.record-build && inputs.project == 'paperclip'
+        run: node --check paperclip/prepare-runtime.mjs
       - name: Download build artifact
         if: inputs.build-artifact != ''
         uses: actions/download-artifact@v8

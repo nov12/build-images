@@ -67,6 +67,11 @@ RUN PAPERCLIP_RUNNER_SOURCE_REVISION="$PAPERCLIP_COMMIT" \
         node packages/paperclip-runner/scripts/build-provider-pack.mjs /provider-pack \
     && chmod -R a+rX /provider-pack
 
+COPY paperclip/prepare-runtime.mjs /usr/local/lib/prepare-runtime.mjs
+
+RUN node /usr/local/lib/prepare-runtime.mjs /app /runtime/app \
+    && du -sh /app /runtime/app
+
 FROM node:${NODE_VERSION}-trixie-slim AS runtime-system
 
 ARG COREPACK_VERSION=latest
@@ -121,7 +126,7 @@ RUN set -eux; \
     install -d -m 0755 -o "$USER_UID" -g "$USER_GID" \
         /home/node /paperclip /opt/agent-cli /workspace
 
-COPY --from=paperclip-builder --chown=${USER_UID}:${USER_GID} /app/ /app/
+COPY --from=paperclip-builder --chown=${USER_UID}:${USER_GID} /runtime/app/ /app/
 COPY --from=paperclip-builder --chown=${USER_UID}:${USER_GID} /opt/corepack/ /opt/corepack/
 COPY --from=paperclip-builder /provider-pack/ /opt/paperclip-runner/provider-pack/
 COPY --from=paperclip-builder /usr/local/share/build-images/ /usr/local/share/build-images/

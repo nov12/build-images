@@ -83,7 +83,7 @@ jobs:
             {
               printf '%s\n' "$upstream_version" "$commit" "$NODE_VERSION" "$COREPACK_VERSION"
               find common .github/scripts -type f -print0 | LC_ALL=C sort -z | xargs -0 sha256sum
-              sha256sum paperclip/Dockerfile paperclip/entrypoint.sh \
+              sha256sum paperclip/Dockerfile paperclip/entrypoint.sh paperclip/prepare-runtime.mjs \
                 .github/workflows/paperclip.build.yml .github/workflows/docker-release.yml
             } | sha256sum | cut -d ' ' -f1
           )"
