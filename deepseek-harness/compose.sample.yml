@@ -1,0 +1,43 @@
+# Start: docker compose up -d
+# Web login link: docker compose logs deepseek-harness
+services:
+  deepseek-harness:
+    image: ghcr.io/nov12/deepseek-harness:latest
+    pull_policy: always
+    container_name: deepseek-harness
+    restart: unless-stopped
+    user: "${PUID:-666}:${PGID:-666}" # Mounts must be writable by these IDs.
+
+    ports:
+      - "127.0.0.1:3080:3080" # Use "3080:3080" for access from other hosts.
+
+    environment:
+      DSH_VERSION: "latest" # npm tag or version.
+      DSH_UPDATE_INTERVAL: "86400" # Startup update interval in seconds; 0 skips checks.
+
+      # Optional tools; see docs/common.md for all supported settings.
+      EXTRA_TOOLS: "" # Example: "go,python@3.13"
+      PYTHON_PACKAGES: "" # Example: "requests,ruff"
+      TOOLS_INSTALL_MODE: "update" # skip, update, overwrite.
+      TOOLS_UPDATE_INTERVAL: "86400" # Seconds; 0 reuses installed tools.
+
+      # Set the API key in .env or through the Web UI.
+      # DEEPSEEK_API_KEY: "${DEEPSEEK_API_KEY}"
+
+      # HTTPS reverse proxy: preserve Host and forward WebSockets.
+      # DSH_PUBLIC_URL: "https://dsh.example.com/"
+      # DSH_TRUSTED_HOSTS: "dsh.example.com,dsh.lan"
+
+      # DSH_HOST: "172.20.0.2" # Auto-detected by default; do not use 0.0.0.0.
+      # DSH_PORT: "3080" # Also change the container-side port above.
+
+    volumes:
+      - dsh-home:/home/node # Settings, sessions, plugins and installed tools.
+      - ./workspace:/workspace
+      # - ./plugins:/plugins # Local plugins or Python packages.
+
+    # Manage plugins in the Web UI, or install a local plugin with:
+    # docker compose exec deepseek-harness dsh plugin --profile web add /plugins/my-plugin
+
+volumes:
+  dsh-home:

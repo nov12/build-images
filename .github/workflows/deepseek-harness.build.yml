@@ -1,0 +1,150 @@
+name: Build DeepSeek Harness
+
+on:
+  workflow_dispatch:
+  pull_request:
+    paths:
+      - "deepseek-harness/**"
+      - "common/**"
+      - ".github/scripts/resolve-toolchains.sh"
+      - ".github/workflows/deepseek-harness.build.yml"
+      - ".github/workflows/docker-release.yml"
+  push:
+    branches: [main]
+    paths:
+      - "deepseek-harness/**"
+      - "common/**"
+      - ".github/scripts/resolve-toolchains.sh"
+      - ".github/workflows/deepseek-harness.build.yml"
+      - ".github/workflows/docker-release.yml"
+  schedule:
+    - cron: "43 3 * * 1"
+
+permissions:
+  contents: read
+  packages: write
+
+concurrency:
+  group: deepseek-harness-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  resolve:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    outputs:
+      version: ${{ steps.resolve.outputs.version }}
+      build: ${{ steps.resolve.outputs.build }}
+      args: ${{ steps.resolve.outputs.args }}
+      build_key: ${{ steps.resolve.outputs.build_key }}
+      pnpm_version: ${{ steps.resolve.outputs.pnpm_version }}
+      node_version: ${{ steps.toolchains.outputs.node_version }}
+      upstream_commit: ${{ steps.resolve.outputs.commit }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+      - name: Resolve current LTS toolchains
+        id: toolchains
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          bash -n .github/scripts/resolve-toolchains.sh
+          bash .github/scripts/resolve-toolchains.sh
+      - name: Set up Node
+        uses: actions/setup-node@v6
+        with:
+          node-version: ${{ steps.toolchains.outputs.node_version }}
+      - name: Set up uv
+        uses: astral-sh/setup-uv@v10
+        with:
+          version: latest
+      - name: Check configuration
+        run: |
+          set -euo pipefail
+          find common -type f -name '*.sh' -print0 | xargs -0 -r -n 1 bash -n
+          bash -n deepseek-harness/entrypoint.sh
+          docker compose -f deepseek-harness/compose.sample.yml config --quiet
+      - name: Resolve current releases
+        id: resolve
+        env:
+          NODE_VERSION: ${{ steps.toolchains.outputs.node_version }}
+        run: |
+          set -euo pipefail
+          version="$(npm view @deepseek-ai/dsh@latest version)"
+          [[ "$version" =~ ^[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z.-]+)?$ ]]
+          npm view "@deepseek-ai/dsh@$version" version dist.integrity gitHead --json > dsh-release.json
+          integrity="$(jq -er '."dist.integrity" | select(startswith("sha512-"))' dsh-release.json)"
+          commit="$(jq -r '.gitHead // ""' dsh-release.json)"
+          [[ -z "$commit" || "$commit" =~ ^[a-f0-9]{40}$ ]]
+          cat dsh-release.json >> "$GITHUB_STEP_SUMMARY"
+          pnpm_version="$(npm view pnpm@latest version)"
+          [[ "$pnpm_version" =~ ^[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z.-]+)?$ ]]
+          uv_version="$(uv --version | awk '{print $2}')"
+          build_key="$(
+            {
+              printf '%s\n' "$version" "$integrity" "$commit" "$pnpm_version" "$uv_version" "$NODE_VERSION"
+              find common -type f -print0 | LC_ALL=C sort -z | xargs -0 sha256sum
+              sha256sum .github/scripts/resolve-toolchains.sh deepseek-harness/Dockerfile deepseek-harness/entrypoint.sh \
+                .github/workflows/deepseek-harness.build.yml .github/workflows/docker-release.yml
+            } | sha256sum | cut -d ' ' -f1
+          )"
+          {
+            echo "version=dsh-$version"
+            echo "commit=$commit"
+            echo "build_key=$build_key"
+            echo "pnpm_version=$pnpm_version"
+            echo 'build=true'
+            echo 'args<<BUILD_ARGS'
+            echo "DSH_VERSION=$version"
+            echo "UV_VERSION=$uv_version"
+            echo "DEPENDENCY_CACHE_KEY=$build_key"
+            echo BUILD_ARGS
+          } >> "$GITHUB_OUTPUT"
+
+  release:
+    needs: resolve
+    if: needs.resolve.outputs.build == 'true'
+    uses: ./.github/workflows/docker-release.yml
+    with:
+      project: deepseek-harness
+      check-numeric-user: true
+      numeric-user-mounts: |
+        /home/node
+      context: .
+      upstream-revision: ${{ needs.resolve.outputs.upstream_commit }}
+      version: ${{ needs.resolve.outputs.version }}
+      build-args: |
+        NODE_VERSION=${{ needs.resolve.outputs.node_version }}
+        ${{ needs.resolve.outputs.args }}
+      build-key: ${{ needs.resolve.outputs.build_key }}
+      security-rebuild: ${{ github.event_name == 'schedule' || github.event_name == 'workflow_dispatch' }}
+      record-build: true
+      record-command: |
+        node --version
+        npm --version
+        dsh --version
+        pnpm --version
+        uv --version
+        find /usr/local/share/build-images -type f -print -exec cat {} \;
+        dpkg-query -W
+      check-startup: true
+      startup-command: |
+        docker run -d --network none \
+          -e AGENT_CLIS=none -e EXTRA_TOOLS=none -e PYTHON_PACKAGES=none \
+          -e CLI_UPDATE_INTERVAL=0 -e DSH_HOST=127.0.0.1 \
+          -e NPM_CONFIG_REGISTRY=http://127.0.0.1:9 "$CHECK_IMAGE"
+      startup-check-command: |
+        docker exec "$CHECK_CONTAINER" /usr/local/bin/node --input-type=module -e '
+          const response = await fetch("http://127.0.0.1:3080/", { signal: AbortSignal.timeout(4000) });
+          if (!response.ok && response.status !== 401) throw new Error("DSH Web startup failed");
+        '
+        docker logs "$CHECK_CONTAINER" 2>&1 | grep -F 'DSH update failed; using the existing installation or image fallback' >/dev/null
+      check-command: |
+        dsh --version
+        node -p process.versions.node | grep -Fx "${{ needs.resolve.outputs.node_version }}"
+        pnpm --version | grep -Fx "${{ needs.resolve.outputs.pnpm_version }}"
+        uv --version
+        node -e "require(require.resolve('node-pty', {paths: ['/opt/dsh/node_modules/@deepseek-ai/dsh-subprocess-local']}))"
+      publish: ${{ github.event_name != 'pull_request' && github.ref == format('refs/heads/{0}', github.event.repository.default_branch) }}
