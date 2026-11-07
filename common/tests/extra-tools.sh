@@ -308,7 +308,7 @@ assert_equal "$AGENT_CLI_MANAGER_NODE" "$expected_node"
 # Exercise complete initialization with no requested installs and a system uv.
 (
   export PATH="$AGENT_CLI_MANAGER_PATH"
-  # shellcheck disable=SC2329 # Invoked indirectly by common_initialize.
+  # shellcheck disable=SC2317,SC2329 # Invoked indirectly by common_initialize.
   extra_tools_profile_directory() { printf '%s\n' "$test_root/initialized"; }
   export AGENT_CLIS=none EXTRA_TOOLS=none PYTHON_PACKAGES=none AGENT_CLI_ROOT="$test_root/cli"
   common_initialize
