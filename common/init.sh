@@ -31,19 +31,27 @@ common_update_loop() {
 
 common_initialize() {
   [[ "${COMMON_INITIALIZED_PID:-}" == "$BASHPID" ]] && return 0
-  common_prepare_user || return
+  common_prepare_user "" || return
+  common_python_environment || return
+  mkdir -p -- "$PYTHON_PACKAGES_ROOT" "$UV_ENVIRONMENTS_ROOT" || return
   agent_cli_initialize || return
   common_update_once
   if common_updates_enabled; then
     common_update_loop &
   fi
   extra_tools_initialize
+  common_python_publish_uv || return
+  PATH="$(extra_tools_profile_directory)/bin:$PATH"
+  export PATH
   export PATH="$AGENT_CLI_MANAGER_ROOT/bin:$PATH"
   COMMON_INITIALIZED_PID="$BASHPID"
 }
 
 common_run_updates() {
-  common_prepare_user || return
+  common_prepare_user "" || return
+  common_python_environment || return
+  mkdir -p -- "$PYTHON_PACKAGES_ROOT" "$UV_ENVIRONMENTS_ROOT" || return
+  common_python_publish_uv || return
   agent_cli_initialize || return
   common_update_once
   local tools_pid=''

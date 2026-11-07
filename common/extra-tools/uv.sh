@@ -1,10 +1,10 @@
 #!/usr/bin/env bash
 
 extra_tools_require_uv() {
-  if [[ -x "$EXTRA_TOOLS_INTERNAL_ROOT/uv/current/uv" ]]; then EXTRA_TOOLS_INTERNAL_UV="$EXTRA_TOOLS_INTERNAL_ROOT/uv/current/uv"; fi
+  if [[ -x "$EXTRA_TOOLS_INTERNAL_PROFILE/uv/current/uv" ]]; then EXTRA_TOOLS_INTERNAL_UV="$EXTRA_TOOLS_INTERNAL_PROFILE/uv/current/uv"; fi
   [[ -z "$EXTRA_TOOLS_INTERNAL_UV" ]] || return 0
   extra_tools_update_tool uv latest || return
-  EXTRA_TOOLS_INTERNAL_UV="$EXTRA_TOOLS_INTERNAL_ROOT/uv/current/uv"
+  EXTRA_TOOLS_INTERNAL_UV="$EXTRA_TOOLS_INTERNAL_PROFILE/uv/current/uv"
 }
 
 extra_tools_install_uv() {

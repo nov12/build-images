@@ -85,7 +85,7 @@ RUN set -eux; \
     \
     install -d -m 0755 \
         -o "$USER_UID" -g "$USER_GID" \
-        /home/node /opt/agent-cli /workspace
+        /home/node /home/node/agent-cli /home/node/extra-tools /home/node/pythonlib /home/node/uvenvs /workspace
 
 # 只复制 T3 的正式发行程序
 COPY --from=t3-builder /opt/t3/ /opt/t3/
@@ -95,11 +95,15 @@ COPY --from=t3-builder /tmp/download/SHA256SUMS /usr/local/share/build-images/t3
 RUN /opt/t3/t3 --help >/dev/null
 
 ENV HOME=/home/node \
-    PATH="/opt/t3:/opt/agent-cli/bin:/home/node/.local/bin:${PATH}" \
+    PATH="/opt/t3:/home/node/agent-cli/bin:/tmp/extra-tools/bin:/home/node/pythonlib/bin:/home/node/.local/bin:${PATH}" \
     T3CODE_NO_BROWSER=1 \
     CLI_UPDATE_INTERVAL=86400
 
 COPY --chmod=755 common/ /usr/local/lib/container-common/
+COPY common/profile.sh /etc/profile.d/container-common.sh
+
+ENV PIP_TARGET=/home/node/pythonlib \
+    PYTHONPATH=/home/node/pythonlib
 
 ENV LD_PRELOAD=libnss_wrapper.so \
     NSS_WRAPPER_PASSWD=/tmp/container-user/passwd \

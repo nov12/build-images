@@ -78,12 +78,13 @@ RUN set -eux; \
     usermod -g "$USER_GID" node; \
     install -d -m 0755 \
         -o "$USER_UID" -g "$USER_GID" \
-        /home/node /home/node/.paseo /opt/agent-cli /workspace
+        /home/node /home/node/.paseo /home/node/agent-cli /home/node/extra-tools /home/node/pythonlib /home/node/uvenvs /workspace
 
 COPY --from=paseo-builder /opt/paseo/ /opt/paseo/
 
 # 使用仓库根目录作为构建上下文，直接复用已有 Agent CLI 管理入口
 COPY --chmod=755 common/ /usr/local/lib/container-common/
+COPY common/profile.sh /etc/profile.d/container-common.sh
 COPY --chmod=755 paseo/entrypoint.sh /usr/local/lib/paseo/entrypoint.sh
 COPY paseo/plugins.mjs /usr/local/lib/paseo/plugins.mjs
 
@@ -91,13 +92,16 @@ COPY paseo/plugins.mjs /usr/local/lib/paseo/plugins.mjs
 RUN node -e "require('/opt/paseo/node_modules/node-pty')"
 
 ENV HOME=/home/node \
-    PATH="/opt/paseo/node_modules/.bin:/opt/agent-cli/bin:/home/node/.local/bin:${PATH}" \
+    PATH="/opt/paseo/node_modules/.bin:/home/node/agent-cli/bin:/tmp/extra-tools/bin:/home/node/pythonlib/bin:/home/node/.local/bin:${PATH}" \
     PASEO_HOME=/home/node/.paseo \
     PASEO_LISTEN=0.0.0.0:6767 \
     PASEO_WEB_UI_ENABLED=true \
     PASEO_LOG_FORMAT=json \
     PASEO_LOG_LEVEL=info \
     CLI_UPDATE_INTERVAL=86400
+
+ENV PIP_TARGET=/home/node/pythonlib \
+    PYTHONPATH=/home/node/pythonlib
 
 ENV LD_PRELOAD=libnss_wrapper.so \
     NSS_WRAPPER_PASSWD=/tmp/container-user/passwd \

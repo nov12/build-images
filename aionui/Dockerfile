@@ -59,7 +59,7 @@ RUN set -eux; \
     fi; \
     usermod -g "$USER_GID" node; \
     install -d -o "$USER_UID" -g "$USER_GID" \
-        /data /workspace /home/node/.local; \
+        /data /workspace /home/node/.local /home/node/agent-cli /home/node/extra-tools /home/node/pythonlib /home/node/uvenvs; \
     chown -R "$USER_UID:$USER_GID" /home/node
 
 WORKDIR /app
@@ -74,17 +74,17 @@ COPY --from=core-bin /SHA256SUMS /usr/local/share/build-images/aioncore-SHA256SU
 COPY --from=web-assets /renderer/ /app/out/renderer/
 
 COPY --chmod=755 common/ /usr/local/lib/container-common/
+COPY common/profile.sh /etc/profile.d/container-common.sh
 COPY --chmod=755 aionui/entrypoint.sh /usr/local/bin/entrypoint.sh
 
 ENV HOME=/home/node \
     NODE_ENV=production \
-    PATH="/home/node/.local/bin:${PATH}" \
+    PATH="/home/node/agent-cli/bin:/home/node/.local/bin:/tmp/extra-tools/bin:/home/node/pythonlib/bin:${PATH}" \
     AIONUI_ALLOW_REMOTE=1 \
     AIONUI_DATA_DIR=/data \
     AIONUI_LOG_LEVEL=info \
     AIONUI_STATIC_DIR=/app/out/renderer \
     AIONUI_BACKEND_BIN=/usr/local/bin/aioncore \
-    AGENT_CLI_ROOT=/home/node/.local \
     AGENT_CLI_ALL_EXTRA=agy \
     CLI_UPDATE_INTERVAL=86400
 
@@ -97,6 +97,9 @@ RUN aioncore --help >/dev/null \
     && test -s /app/out/renderer/index.html \
     && test ! -e /app/node_modules \
     && test ! -e /app/packages
+
+ENV PIP_TARGET=/home/node/pythonlib \
+    PYTHONPATH=/home/node/pythonlib
 
 ENV LD_PRELOAD=libnss_wrapper.so \
     NSS_WRAPPER_PASSWD=/tmp/container-user/passwd \

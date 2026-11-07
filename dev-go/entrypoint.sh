@@ -23,18 +23,33 @@ SSH_CONFIG_DIR="${CONFIG_DIR}/ssh"
 SSHD_CONFIG_DIR="/etc/ssh/sshd_config.d"
 SSHD_CONFIG="${SSHD_CONFIG_DIR}/00-container.conf"
 
-AGENT_CLI_ROOT="${AGENT_CLI_ROOT:-/opt/agent-cli}"
-export AGENT_CLI_ROOT
-export PATH="$AGENT_CLI_ROOT/bin:$PATH"
-
 source /usr/local/lib/container-common/init.sh
 if [[ "$1" == sshd ]]; then shift; set -- /usr/sbin/sshd "$@"; fi
+
+write_ssh_environment() {
+  local variable value
+  printf 'SetEnv' >> "$SSHD_CONFIG"
+  for variable in PATH AGENT_CLI_ROOT EXTRA_TOOLS_ROOT PYTHON_PACKAGES_ROOT UV_ENVIRONMENTS_ROOT UV_PYTHON_INSTALL_DIR UV_TOOL_DIR PIP_TARGET GOPATH GOTOOLCHAIN PYTHONPATH PYTHONDONTWRITEBYTECODE PIP_DISABLE_PIP_VERSION_CHECK PIP_NO_CACHE_DIR LD_PRELOAD NSS_WRAPPER_PASSWD NSS_WRAPPER_GROUP; do
+    [[ -v "$variable" ]] || continue
+    value="${!variable}"
+    value="${value//\\/\\\\}"
+    value="${value//\"/\\\"}"
+    printf ' "%s=%s"' "$variable" "$value" >> "$SSHD_CONFIG"
+  done
+  printf '\n' >> "$SSHD_CONFIG"
+}
 
 if [[ "$(id -u)" != 0 ]]; then
   # 数字用户没有系统家目录时，使用镜像的默认用户目录。
   if [[ "${HOME:-/}" == / || "$HOME" == /root ]]; then
     export HOME="/home/$USER_NAME"
   fi
+  AGENT_CLI_ROOT="$(agent_cli_root)"
+  EXTRA_TOOLS_ROOT="$(extra_tools_root)"
+  export AGENT_CLI_ROOT EXTRA_TOOLS_ROOT
+  common_python_environment
+  PATH="$AGENT_CLI_ROOT/bin:$(extra_tools_profile_directory)/bin:$PATH"
+  export PATH
   if [[ "$1" != /usr/sbin/sshd ]]; then
     common_initialize
     exec "$@"
@@ -57,9 +72,6 @@ if [[ "$(id -u)" != 0 ]]; then
       ssh-keygen -q -N '' -t "$TYPE" -f "$KEY"
     fi
   done
-  EXTRA_TOOLS_HOME="${EXTRA_TOOLS_HOME:-${CONTAINER_TOOLS_HOME:-$HOME/.local/share/extra-tools}}"
-  export EXTRA_TOOLS_HOME
-  export PATH="$AGENT_CLI_ROOT/bin:$EXTRA_TOOLS_HOME/bin:$PATH"
   # 无需系统账户、PAM 或特权切换；SSH 登录后仍使用当前 UID/GID。
   SSHD_CONFIG="$SSH_CONFIG_DIR/sshd_config"
   cat > "$SSHD_CONFIG" <<CONFIG
@@ -76,15 +88,7 @@ AuthorizedKeysFile .ssh/authorized_keys
 AllowUsers $USER_NAME
 Subsystem sftp internal-sftp
 CONFIG
-  printf 'SetEnv' >> "$SSHD_CONFIG"
-  for variable in PATH AGENT_CLI_ROOT EXTRA_TOOLS_HOME GOPATH GOTOOLCHAIN PYTHONPATH PYTHONDONTWRITEBYTECODE PIP_DISABLE_PIP_VERSION_CHECK PIP_NO_CACHE_DIR LD_PRELOAD NSS_WRAPPER_PASSWD NSS_WRAPPER_GROUP; do
-    [[ -v "$variable" ]] || continue
-    value="${!variable}"
-    value="${value//\\/\\\\}"
-    value="${value//\"/\\\"}"
-    printf ' "%s=%s"' "$variable" "$value" >> "$SSHD_CONFIG"
-  done
-  printf '\n' >> "$SSHD_CONFIG"
+  write_ssh_environment
   /usr/sbin/sshd -t -f "$SSHD_CONFIG"
   common_run_updates &
   exec "$@" -f "$SSHD_CONFIG"
@@ -139,12 +143,19 @@ fi
 USER_UID="$(id -u "$USER_NAME")"
 USER_GID="$(id -g "$USER_NAME")"
 HOME_DIR="$(getent passwd "$USER_NAME" | cut -d: -f6)"
-EXTRA_TOOLS_HOME="${EXTRA_TOOLS_HOME:-${CONTAINER_TOOLS_HOME:-$HOME_DIR/.local/share/extra-tools}}"
-export EXTRA_TOOLS_HOME
-export PATH="$AGENT_CLI_ROOT/bin:$EXTRA_TOOLS_HOME/bin:$PATH"
+AGENT_CLI_ROOT="${AGENT_CLI_ROOT:-$HOME_DIR/agent-cli}"
+EXTRA_TOOLS_ROOT="${EXTRA_TOOLS_ROOT:-$HOME_DIR/extra-tools}"
+PYTHON_PACKAGES_ROOT="${PYTHON_PACKAGES_ROOT:-$HOME_DIR/pythonlib}"
+UV_ENVIRONMENTS_ROOT="${UV_ENVIRONMENTS_ROOT:-$HOME_DIR/uvenvs}"
+export AGENT_CLI_ROOT EXTRA_TOOLS_ROOT PYTHON_PACKAGES_ROOT UV_ENVIRONMENTS_ROOT
+common_python_environment
+PATH="$AGENT_CLI_ROOT/bin:$(extra_tools_profile_directory)/bin:$PATH"
+export PATH
 
 # 设置目录归属
-chown "$USER_UID:$USER_GID" "$HOME_DIR" /go /pythonlib /workspace
+chown "$USER_UID:$USER_GID" "$HOME_DIR" /go /workspace
+install -d -o "$USER_UID" -g "$USER_GID" \
+  "$AGENT_CLI_ROOT" "$EXTRA_TOOLS_ROOT" "$PYTHON_PACKAGES_ROOT" "$UV_ENVIRONMENTS_ROOT" "$(extra_tools_profile_directory)"
 
 # 设置用户密码
 if [ -n "$USER_PASSWORD" ]; then
@@ -219,10 +230,8 @@ AuthorizedKeysFile .ssh/authorized_keys
 
 AllowUsers ${USER_NAME}
 
-SetEnv PATH=${PATH} AGENT_CLI_ROOT=${AGENT_CLI_ROOT}
-SetEnv GOPATH=/go GOTOOLCHAIN=local
-SetEnv PYTHONPATH=/pythonlib PYTHONDONTWRITEBYTECODE=1 PIP_DISABLE_PIP_VERSION_CHECK=1 PIP_NO_CACHE_DIR=1
 EOF
+write_ssh_environment
 
 chmod 644 "$SSHD_CONFIG"
 

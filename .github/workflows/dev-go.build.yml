@@ -107,7 +107,6 @@ jobs:
       check-numeric-user: true
       numeric-user-mounts: |
         /home/apple
-        /opt/agent-cli
         /data
       check-ssh-server: true
       ssh-check-command: |
@@ -121,7 +120,6 @@ jobs:
           container="$(docker run -d --network none --user "$run_as" \
             --tmpfs "/home/apple:uid=$uid,gid=$gid,mode=700" \
             --tmpfs "/config:uid=$uid,gid=$gid,mode=700" \
-            --tmpfs "/opt/agent-cli:uid=$uid,gid=$gid,mode=700" \
             -e PUBLIC_KEY="$public_key" -e SSH_LISTEN_PORT=22222 \
             -e AGENT_CLIS=none -e EXTRA_TOOLS=none -e PYTHON_PACKAGES=none \
             -e CLI_UPDATE_INTERVAL=0 "$CHECK_IMAGE")"

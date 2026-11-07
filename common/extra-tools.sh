@@ -1,5 +1,7 @@
 #!/usr/bin/env bash
 
+source "${BASH_SOURCE[0]%/*}/extra-tools/paths.sh"
+source "${BASH_SOURCE[0]%/*}/python.sh"
 source "${BASH_SOURCE[0]%/*}/extra-tools/existing.sh"
 source "${BASH_SOURCE[0]%/*}/extra-tools/go.sh"
 source "${BASH_SOURCE[0]%/*}/extra-tools/dotnet.sh"
@@ -15,12 +17,13 @@ extra_tools_log() {
 }
 
 extra_tools_enabled() {
-  local root="${EXTRA_TOOLS_HOME:-${CONTAINER_TOOLS_HOME:-$HOME/.local/share/extra-tools}}"
+  local profile
+  profile="$(extra_tools_profile_directory)" || return
   local tools="${EXTRA_TOOLS:-}" packages="${PYTHON_PACKAGES:-}"
   tools="${tools//[[:space:]]/}"
   packages="${packages//[[:space:]]/}"
   [[ -n "$tools" && "$tools" != none ]] || [[ -n "$packages" && "$packages" != none ]] ||
-    [[ -d "$root/bin" || -e "$root/python/current" || -f "$root/extra-tools-state.json" ]]
+    [[ -d "$profile/bin" || -f "$profile/extra-tools-state.json" ]]
 }
 
 extra_tools_parse_list() {
@@ -89,17 +92,10 @@ extra_tools_activate() {
 }
 
 extra_tools_activate_release() {
-  local candidate="$1" link="$2" directory="$3" prefix="${4:-}"
-  local previous current entry
-  previous="$(readlink -f -- "$link" 2>/dev/null || true)"
-  extra_tools_activate "$candidate" "$link" || return
-  current="$(readlink -f -- "$link")" || return
-  for entry in "$directory"/"$prefix"*; do
-    [[ -d "$entry" && ! -L "$entry" ]] || continue
-    if [[ "$entry" != "$previous" && "$entry" != "$current" ]]; then
-      rm -rf -- "$entry" || extra_tools_log "Cannot remove old release: $entry"
-    fi
-  done
+  local candidate="$1" link="$2"
+  # Other containers may still use any previously installed release.
+  mkdir -p -- "${link%/*}" || return
+  extra_tools_activate "$candidate" "$link"
 }
 
 extra_tools_architecture() {
@@ -128,7 +124,7 @@ extra_tools_probe() {
 }
 
 extra_tools_usable() {
-  extra_tools_probe "$1" "$EXTRA_TOOLS_INTERNAL_ROOT/$1/current" >/dev/null 2>&1
+  extra_tools_probe "$1" "$EXTRA_TOOLS_INTERNAL_PROFILE/$1/current" >/dev/null 2>&1
 }
 
 extra_tools_download() {
@@ -151,6 +147,7 @@ extra_tools_install_archive() (
   [[ "$version" =~ ^[a-zA-Z0-9][a-zA-Z0-9._+-]*$ ]] || return 1
   mkdir -p -- "$directory" || return
   candidate="$(mktemp -d "$directory/$version.XXXXXXXX")" || return
+  : >"$candidate/.installing" || return
   archive="$candidate.archive"
   extra_tools_download "$url" "$archive" "$hash" "$algorithm" || return
   case "$name" in
@@ -171,20 +168,23 @@ extra_tools_install_archive() (
     *) tar -xzf "$archive" -C "$candidate" --strip-components="$strip" || return ;;
   esac
   extra_tools_probe "$name" "$candidate" >/dev/null || return
-  extra_tools_activate_release "$candidate" "$EXTRA_TOOLS_INTERNAL_ROOT/$name/current" "$directory" || return
+  rm -- "$candidate/.installing" || return
+  printf '%s\n' "$version" >"$candidate/.version" || return
+  extra_tools_activate_release "$candidate" "$EXTRA_TOOLS_INTERNAL_PROFILE/$name/current" || return
   candidate=''
 )
 
 extra_tools_publish_commands() {
-  local name directory target command wrapper link destination temporary quoted
+  local name directory target command wrapper link destination temporary quoted helper
+  helper="$(realpath -- "${BASH_SOURCE[0]%/*}/python-command.sh")" || return
   for name in go dotnet python rust node bun deno java uv; do
-    directory="$EXTRA_TOOLS_INTERNAL_ROOT/$name/current/bin"
-    case "$name" in dotnet | bun | deno | uv) directory="$EXTRA_TOOLS_INTERNAL_ROOT/$name/current" ;; esac
+    directory="$EXTRA_TOOLS_INTERNAL_PROFILE/$name/current/bin"
+    case "$name" in dotnet | bun | deno | uv) directory="$EXTRA_TOOLS_INTERNAL_PROFILE/$name/current" ;; esac
     if [[ -d "$directory" ]]; then
-      for wrapper in "$EXTRA_TOOLS_INTERNAL_ROOT/.commands/$name/"*; do
+      for wrapper in "$EXTRA_TOOLS_INTERNAL_PROFILE/.commands/$name/"*; do
         command="${wrapper##*/}"
         [[ -f "$directory/$command" && -x "$directory/$command" ]] && continue
-        link="$EXTRA_TOOLS_INTERNAL_ROOT/bin/$command"
+        link="$EXTRA_TOOLS_INTERNAL_PROFILE/bin/$command"
         if [[ "$(readlink -- "$link" 2>/dev/null || true)" == "$wrapper" ]]; then
           rm -f -- "$link" || return
         fi
@@ -193,8 +193,8 @@ extra_tools_publish_commands() {
         [[ -f "$target" && -x "$target" ]] || continue
         command="${target##*/}"
         [[ "$command" =~ ^[a-zA-Z0-9][a-zA-Z0-9._+-]*$ ]] || continue
-        wrapper="$EXTRA_TOOLS_INTERNAL_ROOT/.commands/$name/$command"
-        link="$EXTRA_TOOLS_INTERNAL_ROOT/bin/$command"
+        wrapper="$EXTRA_TOOLS_INTERNAL_PROFILE/.commands/$name/$command"
+        link="$EXTRA_TOOLS_INTERNAL_PROFILE/bin/$command"
         if [[ -e "$link" || -L "$link" ]]; then
           destination="$(readlink -- "$link" 2>/dev/null || true)"
           if [[ "$destination" != "$wrapper" && "$destination" != "$target" ]]; then
@@ -205,7 +205,15 @@ extra_tools_publish_commands() {
         mkdir -p -- "${wrapper%/*}" "${link%/*}" || return
         temporary="$wrapper.tmp.$BASHPID"
         quoted="${target//\'/\'\\\'\'}"
-        printf '#!/bin/sh\nexec '\''%s'\'' "$@"\n' "$quoted" >"$temporary" || return
+        if [[ "$name" == uv && "$command" == uv ]]; then
+          printf '#!/usr/bin/env bash\nexec %q uv %q "$@"\n' "$helper" "$target" >"$temporary" || return
+        elif [[ "$name" == uv && "$command" == uvx ]]; then
+          printf '#!/usr/bin/env bash\nexec %q environment %q "$@"\n' "$helper" "$target" >"$temporary" || return
+        elif [[ "$name" == python && -f "$EXTRA_TOOLS_INTERNAL_PROFILE/python/current/pyvenv.cfg" ]]; then
+          printf '#!/usr/bin/env bash\nexec %q environment %q "$@"\n' "$helper" "$target" >"$temporary" || return
+        else
+          printf '#!/bin/sh\nexec '\''%s'\'' "$@"\n' "$quoted" >"$temporary" || return
+        fi
         chmod 755 "$temporary" && mv -f -- "$temporary" "$wrapper" || return
         extra_tools_activate "$wrapper" "$link" || return
       done
@@ -226,9 +234,9 @@ extra_tools_update_tool() (
   local EXTRA_TOOLS_INTERNAL_VERSION='' EXTRA_TOOLS_INTERNAL_INTERPRETER=''
   local EXTRA_TOOLS_INTERNAL_CURRENT_VERSION EXTRA_TOOLS_INTERNAL_SYSTEM_BINARY='' EXTRA_TOOLS_INTERNAL_SYSTEM_VERSION=''
   local EXTRA_TOOLS_INTERNAL_REQUEST="$request"
-  EXTRA_TOOLS_INTERNAL_CURRENT_VERSION="$(extra_tools_version "$name" "$EXTRA_TOOLS_INTERNAL_ROOT/$name/current/$(extra_tools_relative_binary "$name")" || true)"
+  EXTRA_TOOLS_INTERNAL_CURRENT_VERSION="$(extra_tools_version "$name" "$EXTRA_TOOLS_INTERNAL_PROFILE/$name/current/$(extra_tools_relative_binary "$name")" || true)"
   extra_tools_detect_system "$name" || true
-  state="$EXTRA_TOOLS_INTERNAL_ROOT/extra-tools-state.json"
+  state="$EXTRA_TOOLS_INTERNAL_PROFILE/extra-tools-state.json"
   previous="$(jq --arg name "$name" '.[$name] // {}' "$state" 2>/dev/null || printf '{}')"
   version="$(jq -r '.version // ""' <<<"$previous")" || return
   checked="$(jq -r '.checkedAt // 0' <<<"$previous")" || return
@@ -246,7 +254,7 @@ extra_tools_update_tool() (
   fi
   if [[ "$mode" == overwrite ]]; then due=1; fi
   if ((due == 0)) && [[ -n "$version" && "$EXTRA_TOOLS_INTERNAL_CURRENT_VERSION" == "$version" ]]; then
-    if [[ "$name" != python || "${#packages[@]}" == 0 || -f "$EXTRA_TOOLS_INTERNAL_ROOT/python/current/pyvenv.cfg" ]]; then return 0; fi
+    if [[ "$name" != python || "${#packages[@]}" == 0 || -f "$EXTRA_TOOLS_INTERNAL_PROFILE/python/current/pyvenv.cfg" ]]; then return 0; fi
   fi
   repair_request="$request"
   if ((due == 0)) && [[ -n "$version" ]]; then repair_request="${version#go}"; fi
@@ -255,7 +263,10 @@ extra_tools_update_tool() (
     extra_tools_try_existing "$name" '' || true
   fi
   if [[ -z "$EXTRA_TOOLS_INTERNAL_VERSION" ]]; then
-    "extra_tools_install_$name" "$repair_request" "$version" || return
+    if ! "extra_tools_install_$name" "$repair_request" "$version"; then
+      EXTRA_TOOLS_INTERNAL_VERSION=''
+      extra_tools_try_existing "$name" '' || return
+    fi
   fi
   if ! jq -e 'type == "object"' "$state" >/dev/null 2>&1; then
     printf '{}\n' >"$EXTRA_TOOLS_INTERNAL_TEMP/state-base.json" || return
@@ -266,16 +277,20 @@ extra_tools_update_tool() (
     '.[$name] = ({request: $request, mode: $mode, version: $version, checkedAt: $checked} +
       (if $interpreter == "" then {} else {interpreter: $interpreter} end))' \
     "$state" >"$EXTRA_TOOLS_INTERNAL_TEMP/state.json" || return
-  mv -f -- "$EXTRA_TOOLS_INTERNAL_TEMP/state.json" "$EXTRA_TOOLS_INTERNAL_ROOT/extra-tools-state.json" || return
+  mv -f -- "$EXTRA_TOOLS_INTERNAL_TEMP/state.json" "$EXTRA_TOOLS_INTERNAL_PROFILE/extra-tools-state.json" || return
   extra_tools_log "$name: ready ($EXTRA_TOOLS_INTERNAL_VERSION)"
 )
 
 extra_tools_install() (
   local EXTRA_TOOLS_INTERNAL_ROOT="$1" EXTRA_TOOLS_INTERNAL_TEMP='' lock_fd specification name request
-  local EXTRA_TOOLS_INTERNAL_UV
+  local EXTRA_TOOLS_INTERNAL_PROFILE
+  local EXTRA_TOOLS_INTERNAL_UV previous_python
   local -a tools=() packages=()
-  local -A selected=()
+  local -A processed_tools=()
   trap '[[ -z "$EXTRA_TOOLS_INTERNAL_TEMP" ]] || rm -rf -- "$EXTRA_TOOLS_INTERNAL_TEMP"' EXIT
+  EXTRA_TOOLS_INTERNAL_ROOT="$(realpath -m -- "$EXTRA_TOOLS_INTERNAL_ROOT")" || return
+  EXTRA_TOOLS_INTERNAL_PROFILE="$(extra_tools_profile_directory)" || return
+  EXTRA_TOOLS_INTERNAL_PROFILE="$(realpath -m -- "$EXTRA_TOOLS_INTERNAL_PROFILE")" || return
   case "${TOOLS_INSTALL_MODE:-update}" in
     skip | update | overwrite) ;;
     *) extra_tools_log 'TOOLS_INSTALL_MODE must be skip, update or overwrite'; return 1 ;;
@@ -286,14 +301,22 @@ extra_tools_install() (
     extra_tools_log 'Installation requires jq'
     return 1
   fi
-  mkdir -p -- "$EXTRA_TOOLS_INTERNAL_ROOT" || return
+  [[ "$EXTRA_TOOLS_INTERNAL_PROFILE" != "$EXTRA_TOOLS_INTERNAL_ROOT" &&
+    "$EXTRA_TOOLS_INTERNAL_PROFILE" != "$EXTRA_TOOLS_INTERNAL_ROOT/"* ]] || {
+    extra_tools_log 'EXTRA_TOOLS_ROOT must not contain the container runtime directory'; return 1;
+  }
+  mkdir -p -- "$EXTRA_TOOLS_INTERNAL_ROOT" "$EXTRA_TOOLS_INTERNAL_PROFILE" || return
   exec {lock_fd}>"$EXTRA_TOOLS_INTERNAL_ROOT/.extra-tools.lock" || return
   flock --wait 600 "$lock_fd" || return
   EXTRA_TOOLS_INTERNAL_TEMP="$(mktemp -d "$EXTRA_TOOLS_INTERNAL_ROOT/.install.XXXXXXXX")" || return
+  previous_python="$(readlink -f -- "$EXTRA_TOOLS_INTERNAL_PROFILE/python/current" 2>/dev/null || true)"
   export UV_PYTHON_INSTALL_DIR="$EXTRA_TOOLS_INTERNAL_ROOT/python-interpreters"
   export UV_CACHE_DIR="$EXTRA_TOOLS_INTERNAL_ROOT/cache/uv"
-  EXTRA_TOOLS_INTERNAL_UV="$(type -P uv || true)"
-  if [[ -x "$EXTRA_TOOLS_INTERNAL_ROOT/uv/current/uv" ]]; then EXTRA_TOOLS_INTERNAL_UV="$EXTRA_TOOLS_INTERNAL_ROOT/uv/current/uv"; fi
+  # All installer calls use the real uv, without the interactive defaults.
+  common_python_environment
+  common_python_isolate
+  EXTRA_TOOLS_INTERNAL_UV="$(common_uv_binary || true)"
+  if [[ -x "$EXTRA_TOOLS_INTERNAL_PROFILE/uv/current/uv" ]]; then EXTRA_TOOLS_INTERNAL_UV="$EXTRA_TOOLS_INTERNAL_PROFILE/uv/current/uv"; fi
   if ((${#packages[@]})); then
     local has_python=0
     for specification in "${tools[@]}"; do
@@ -322,25 +345,31 @@ extra_tools_install() (
       lts) [[ "$name" == dotnet || "$name" == node || "$name" == java ]] || { extra_tools_log "$name: LTS channel is not supported"; continue; } ;;
       sts) [[ "$name" == dotnet ]] || { extra_tools_log "$name: STS channel is not supported"; continue; } ;;
     esac
-    [[ -z "${selected[$name]+x}" ]] || continue
-    selected[$name]=1
+    [[ -z "${processed_tools[$name]+x}" ]] || continue
+    processed_tools[$name]=1
     extra_tools_update_tool "$name" "$request" || extra_tools_log "$specification: installation failed; keeping available version"
-    if [[ "$name" == uv && -x "$EXTRA_TOOLS_INTERNAL_ROOT/uv/current/uv" ]]; then
-      EXTRA_TOOLS_INTERNAL_UV="$EXTRA_TOOLS_INTERNAL_ROOT/uv/current/uv"
+    if [[ "$name" == uv && -x "$EXTRA_TOOLS_INTERNAL_PROFILE/uv/current/uv" ]]; then
+      EXTRA_TOOLS_INTERNAL_UV="$EXTRA_TOOLS_INTERNAL_PROFILE/uv/current/uv"
     fi
   done
   if ((${#packages[@]})); then
-    if extra_tools_require_uv; then extra_tools_install_python_packages "${packages[@]}"; fi
+    if ! extra_tools_require_uv || ! extra_tools_install_python_packages "${packages[@]}"; then
+      if [[ -d "$previous_python" ]]; then
+        extra_tools_activate_release "$previous_python" "$EXTRA_TOOLS_INTERNAL_PROFILE/python/current" || return
+      fi
+    fi
   fi
   extra_tools_publish_commands
 )
 
 extra_tools_initialize() {
   extra_tools_enabled || return 0
-  local root="${EXTRA_TOOLS_HOME:-${CONTAINER_TOOLS_HOME:-$HOME/.local/share/extra-tools}}"
-  root="$(realpath -m -- "$root")" || return
+  local root profile
+  root="$(extra_tools_root)" || return
+  profile="$(extra_tools_profile_directory)" || return
+  profile="$(realpath -m -- "$profile")" || return
+  export EXTRA_TOOLS_ROOT="$root"
   extra_tools_install "$root" || extra_tools_log 'Initialization failed; using available tools'
-  if [[ -d "$root/bin" && ":$PATH:" != *":$root/bin:"* ]]; then export PATH="$root/bin:$PATH"; fi
-  if [[ -f "$root/python/current/pyvenv.cfg" && -x "$root/python/current/bin/python" ]]; then export VIRTUAL_ENV="$root/python/current"; fi
+  if [[ -d "$profile/bin" && ":$PATH:" != *":$profile/bin:"* ]]; then export PATH="$profile/bin:$PATH"; fi
   return 0
 }

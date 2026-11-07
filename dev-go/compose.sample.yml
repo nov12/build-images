@@ -9,6 +9,9 @@ services:
       - "${SSH_PORT:-2222}:22"
 
     environment:
+      # Optional tools; for example go@1.26,python@3.13
+      # EXTRA_TOOLS: "go@1.26,python@3.13"
+
       USER_NAME: "${USER_NAME:-apple}"
       TZ: "${TZ:-Asia/Singapore}"
 
@@ -32,15 +35,15 @@ services:
 
       # User configuration and Agent authentication
       - dev-go-home:/home/${USER_NAME:-apple}
-
-      # Installed Agent CLIs
-      - agent-cli:/opt/agent-cli
+      # Tools and Python packages persist in the home volume above.
+      # Optional: share individual directories using the same host paths in other containers.
+      # - /srv/shared/agent-cli:/home/${USER_NAME:-apple}/agent-cli
+      # - /srv/shared/extra-tools:/home/${USER_NAME:-apple}/extra-tools
+      # - /srv/shared/pythonlib:/home/${USER_NAME:-apple}/pythonlib
+      # - /srv/shared/uvenvs:/home/${USER_NAME:-apple}/uvenvs
 
       # Go tools and dependency cache
       - go-data:/go
-
-      # Python dependencies installed with pip install --target=/pythonlib
-      - pythonlib:/pythonlib
 
       # Project workspace
       - ./workspace:/workspace
@@ -48,6 +51,4 @@ services:
 volumes:
   dev-go-config:
   dev-go-home:
-  agent-cli:
   go-data:
-  pythonlib:

@@ -110,7 +110,6 @@ jobs:
       check-numeric-user: true
       numeric-user-mounts: |
         /home/node
-        /opt/agent-cli
         /data
       context: .
       # Match the shared workflow: offline binary/module checks, no provider calls.
@@ -121,7 +120,8 @@ jobs:
         test -s /app/LICENSE
         test "$(id -u)" -ne 0
         test -w /home/node
-        test -w /opt/agent-cli
+        mkdir -p "${AGENT_CLI_ROOT:-$HOME/agent-cli}"
+        test -w "${AGENT_CLI_ROOT:-$HOME/agent-cli}"
         test "$(npm config get prefix)" = /home/node/.local
         test "$(npm config get cache)" = /home/node/.npm
         test -s /opt/paperclip-runner/provider-pack/provider-pack.json
