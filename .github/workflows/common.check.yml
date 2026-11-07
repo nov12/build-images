@@ -4,10 +4,14 @@ on:
   pull_request:
     paths:
       - common/**
+      - .github/scripts/prune-images.py
+      - .github/scripts/tests/test_prune_images.py
       - .github/workflows/common.check.yml
   push:
     paths:
       - common/**
+      - .github/scripts/prune-images.py
+      - .github/scripts/tests/test_prune_images.py
       - .github/workflows/common.check.yml
   workflow_dispatch:
 
@@ -35,3 +39,5 @@ jobs:
           shellcheck -e SC1091,SC2034 common/tests/extra-tools.sh
       - name: Check shared tools and independent version selection
         run: bash common/tests/extra-tools.sh
+      - name: Check per-tag image retention
+        run: python3 -m unittest discover -s .github/scripts/tests -p "test_*.py"
