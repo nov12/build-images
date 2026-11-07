@@ -31,7 +31,7 @@ common_update_loop() {
 
 common_initialize() {
   [[ "${COMMON_INITIALIZED_PID:-}" == "$BASHPID" ]] && return 0
-  common_prepare_user || return
+  common_prepare_user "" || return
   common_python_environment || return
   mkdir -p -- "$PYTHON_PACKAGES_ROOT" "$UV_ENVIRONMENTS_ROOT" || return
   agent_cli_initialize || return
@@ -48,7 +48,7 @@ common_initialize() {
 }
 
 common_run_updates() {
-  common_prepare_user || return
+  common_prepare_user "" || return
   common_python_environment || return
   mkdir -p -- "$PYTHON_PACKAGES_ROOT" "$UV_ENVIRONMENTS_ROOT" || return
   common_python_publish_uv || return
