@@ -24,15 +24,13 @@ ARG TASK_VERSION
 
 ENV GOPATH=/go \
     GOTOOLCHAIN=local \
-    PYTHONPATH=/pythonlib \
     PYTHONDONTWRITEBYTECODE=1 \
     PIP_DISABLE_PIP_VERSION_CHECK=1 \
     PIP_NO_CACHE_DIR=1 \
-    AGENT_CLI_ROOT=/opt/agent-cli \
     AGENT_CLIS=codex,claude,opencode \
     CLI_UPDATE_INTERVAL=86400
 
-ENV PATH="/usr/local/go/bin:/go/bin:/opt/agent-cli/bin:${PATH}"
+ENV PATH="/tmp/extra-tools/bin:/usr/local/go/bin:/go/bin:${PATH}"
 
 COPY --from=go-sdk /usr/local/go /usr/local/go
 COPY --from=python-runtime /usr/local/ /usr/local/
@@ -103,8 +101,8 @@ RUN set -eux; \
     install -m 755 task /usr/local/bin/task; \
     rm -rf /tmp/task /tmp/task_checksums.txt "/tmp/${TASK_ARCHIVE}"; \
     \
-    mkdir -p /workspace /pythonlib /go /config/ssh /run/sshd /opt/agent-cli; \
-    printf '%s\n' 'export PATH="/usr/local/go/bin:/go/bin:${AGENT_CLI_ROOT:-/opt/agent-cli}/bin:$PATH"' \
+    mkdir -p /workspace /go /config/ssh /run/sshd; \
+    printf '%s\n' 'export PATH="$PATH:/usr/local/go/bin:/go/bin"' \
         > /etc/profile.d/dev-go.sh; \
     \
     python --version; \
@@ -119,6 +117,7 @@ RUN set -eux; \
 
 # 使用仓库根目录作为构建上下文，复用已有 Agent CLI 管理入口
 COPY --chmod=755 common/ /usr/local/lib/container-common/
+COPY common/profile.sh /etc/profile.d/container-common.sh
 COPY --chmod=755 dev-go/entrypoint.sh /usr/local/bin/entrypoint
 
 ENV LD_PRELOAD=libnss_wrapper.so \

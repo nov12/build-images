@@ -11,6 +11,9 @@ services:
       - "6767:6767"
 
     environment:
+      # Optional tools; for example go@1.26,python@3.13
+      # EXTRA_TOOLS: "go@1.26,python@3.13"
+
       # Set a strong password in .env before starting; required for remote access
       PASEO_PASSWORD: "${PASEO_PASSWORD:?Set PASEO_PASSWORD in .env before starting Paseo}"
 
@@ -44,13 +47,15 @@ services:
     volumes:
       # Daemon state, installed plugins and their settings, user configuration and Agent authentication
       - paseo-home:/home/node
-
-      # Installed Agent CLIs; avoid concurrent updates when sharing this volume
-      - agent-cli:/opt/agent-cli
+      # Tools and Python packages persist in the home volume above.
+      # Optional: share individual directories using the same host paths in other containers.
+      # - /srv/shared/agent-cli:/home/node/agent-cli
+      # - /srv/shared/extra-tools:/home/node/extra-tools
+      # - /srv/shared/pythonlib:/home/node/pythonlib
+      # - /srv/shared/uvenvs:/home/node/uvenvs
 
       # Project workspace
       - ./workspace:/workspace
 
 volumes:
   paseo-home:
-  agent-cli:

@@ -1,5 +1,7 @@
 #!/usr/bin/env bash
 
+source "${BASH_SOURCE[0]%/*}/extra-tools/paths.sh"
+
 agent_cli_log() {
   printf '[agent-update] %s\n' "$*"
 }
@@ -362,19 +364,24 @@ agent_cli_update_all() {
 }
 
 agent_cli_initialize() {
-  local tools_root="${EXTRA_TOOLS_HOME:-${CONTAINER_TOOLS_HOME:-$HOME/.local/share/extra-tools}}" tools_bin path_entry
+  local tools_root tools_bin profile_bin packages_bin path_entry
   local -a path_entries=()
+  tools_root="$(extra_tools_root)" || return
   tools_bin="$(realpath -m -- "$tools_root/bin")" || return
+  profile_bin="$(extra_tools_profile_directory)" || return
+  profile_bin="$(realpath -m -- "$profile_bin/bin")" || return
+  packages_bin="$(python_packages_root)/bin" || return
   IFS=: read -r -a path_entries <<<"$PATH"
   AGENT_CLI_MANAGER_PATH=''
   for path_entry in "${path_entries[@]}"; do
-    case "${path_entry%/}" in "$tools_bin" | "${tools_root%/}/bin") continue ;; esac
+    case "${path_entry%/}" in "$tools_bin" | "$profile_bin" | "$packages_bin") continue ;; esac
     AGENT_CLI_MANAGER_PATH+="${AGENT_CLI_MANAGER_PATH:+:}${path_entry:-.}"
   done
   AGENT_CLI_MANAGER_NODE="$(PATH="$AGENT_CLI_MANAGER_PATH" type -P node || true)"
   AGENT_CLI_MANAGER_NPM="$(PATH="$AGENT_CLI_MANAGER_PATH" type -P npm || true)"
   AGENT_CLI_MANAGER_PATH="$(dirname -- "$AGENT_CLI_MANAGER_NODE"):$AGENT_CLI_MANAGER_PATH"
-  AGENT_CLI_MANAGER_ROOT="$(realpath -m -- "${AGENT_CLI_ROOT:-/opt/agent-cli}")" || return
+  AGENT_CLI_MANAGER_ROOT="$(agent_cli_root)" || return
+  export AGENT_CLI_ROOT="$AGENT_CLI_MANAGER_ROOT"
   AGENT_CLI_MANAGER_SELECTED="${AGENT_CLIS-codex,claude,opencode}"
   AGENT_CLI_MANAGER_SELECTED="${AGENT_CLI_MANAGER_SELECTED//[[:space:]]/}"
   export PATH="$AGENT_CLI_MANAGER_ROOT/bin:$PATH"

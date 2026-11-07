@@ -44,11 +44,15 @@ services:
     volumes:
       - paperclip-data:/paperclip # Back up app state and the embedded database.
       - paperclip-home:/home/node # Provider logins and optional tools.
-      - agent-cli:/opt/agent-cli
+      # Tools and Python packages persist in the home volume above.
+      # Optional: share individual directories using the same host paths in other containers.
+      # - /srv/shared/agent-cli:/home/node/agent-cli
+      # - /srv/shared/extra-tools:/home/node/extra-tools
+      # - /srv/shared/pythonlib:/home/node/pythonlib
+      # - /srv/shared/uvenvs:/home/node/uvenvs
 
       - ./workspace:/workspace # Must be writable by PUID:PGID.
 
 volumes:
   paperclip-data:
   paperclip-home:
-  agent-cli:

@@ -124,7 +124,7 @@ RUN set -eux; \
     fi; \
     usermod -g "$USER_GID" node; \
     install -d -m 0755 -o "$USER_UID" -g "$USER_GID" \
-        /home/node /paperclip /opt/agent-cli /workspace
+        /home/node /paperclip /home/node/agent-cli /home/node/extra-tools /home/node/pythonlib /home/node/uvenvs /workspace
 
 COPY --from=paperclip-builder --chown=${USER_UID}:${USER_GID} /runtime/app/ /app/
 COPY --from=paperclip-builder --chown=${USER_UID}:${USER_GID} /opt/corepack/ /opt/corepack/
@@ -132,6 +132,7 @@ COPY --from=paperclip-builder /provider-pack/ /opt/paperclip-runner/provider-pac
 COPY --from=paperclip-builder /usr/local/share/build-images/ /usr/local/share/build-images/
 # 与 Paseo 一致，私有入口调用公共初始化，再交接固定运行时启动应用。
 COPY --chmod=755 common/ /usr/local/lib/container-common/
+COPY common/profile.sh /etc/profile.d/container-common.sh
 COPY --chmod=755 paperclip/entrypoint.sh /usr/local/lib/paperclip/entrypoint.sh
 
 ARG PAPERCLIP_VERSION
@@ -140,7 +141,7 @@ ARG PAPERCLIP_COMMIT
 ENV NODE_ENV=production \
     HOME=/home/node \
     COREPACK_HOME=/opt/corepack \
-    PATH=/opt/agent-cli/bin:/home/node/.local/bin:${PATH} \
+    PATH=/home/node/agent-cli/bin:/tmp/extra-tools/bin:/home/node/pythonlib/bin:/home/node/.local/bin:${PATH} \
     PAPERCLIP_HOME=/paperclip \
     PAPERCLIP_CONFIG=/paperclip/instances/default/config.json \
     PAPERCLIP_INSTANCE_ID=default \
@@ -159,6 +160,9 @@ ENV NODE_ENV=production \
 # 手动 npm install -g 使用 HOME 持久卷，非 root 用户也能安装和升级额外的 CLI。
 ENV NPM_CONFIG_PREFIX=/home/node/.local \
     NPM_CONFIG_CACHE=/home/node/.npm
+
+ENV PIP_TARGET=/home/node/pythonlib \
+    PYTHONPATH=/home/node/pythonlib
 
 ENV LD_PRELOAD=libnss_wrapper.so \
     NSS_WRAPPER_PASSWD=/tmp/container-user/passwd \

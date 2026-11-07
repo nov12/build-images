@@ -2,9 +2,9 @@
 set -Eeuo pipefail
 
 source /usr/local/lib/container-common/init.sh
-paseo_node="$(type -P node)"
-paseo_runtime_path="$PATH"
 common_initialize
+paseo_node="$AGENT_CLI_MANAGER_NODE"
+paseo_runtime_path="$AGENT_CLI_MANAGER_PATH"
 
 selected="${PASEO_PLUGINS:-}"
 selected="${selected//[[:space:]]/}"

@@ -84,10 +84,12 @@ RUN set -eux; \
     usermod -g "$USER_GID" node; \
     install -d -m 0755 -o "$USER_UID" -g "$USER_GID" \
         /home/node /home/node/.local /home/node/.local/bin \
-        /home/node/.local/share/dsh-container /workspace; \
+        /home/node/.local/share/dsh-container /home/node/agent-cli /home/node/extra-tools \
+        /home/node/pythonlib /home/node/uvenvs /workspace; \
     chown -R "$USER_UID:$USER_GID" /home/node
 
 COPY --chmod=755 common/ /usr/local/lib/container-common/
+COPY common/profile.sh /etc/profile.d/container-common.sh
 COPY --chmod=755 deepseek-harness/entrypoint.sh /usr/local/bin/entrypoint.sh
 RUN ln -s /usr/local/bin/entrypoint.sh /usr/local/bin/dsh
 
@@ -98,8 +100,6 @@ ENV HOME=/home/node \
     DSH_VERSION=latest \
     DSH_UPDATE_INTERVAL=86400 \
     AGENT_CLIS=none \
-    AGENT_CLI_ROOT=/home/node/.local/share/agent-cli \
-    EXTRA_TOOLS_HOME=/home/node/.local/share/extra-tools \
     EXTRA_TOOLS= \
     PYTHON_PACKAGES= \
     TOOLS_INSTALL_MODE=update \
@@ -110,7 +110,10 @@ ENV HOME=/home/node \
     UV_LINK_MODE=copy \
     UV_NO_PROGRESS=1 \
     NODE_USE_ENV_PROXY=1 \
-    PATH="/home/node/.local/share/extra-tools/bin:/home/node/.local/share/agent-cli/bin:/home/node/.local/bin:/home/node/go/bin:/opt/pnpm/node_modules/.bin:${PATH}"
+    PATH="/tmp/extra-tools/bin:/home/node/pythonlib/bin:/home/node/agent-cli/bin:/home/node/.local/bin:/home/node/go/bin:/opt/pnpm/node_modules/.bin:${PATH}"
+
+ENV PIP_TARGET=/home/node/pythonlib \
+    PYTHONPATH=/home/node/pythonlib
 
 ENV LD_PRELOAD=libnss_wrapper.so \
     NSS_WRAPPER_PASSWD=/tmp/container-user/passwd \

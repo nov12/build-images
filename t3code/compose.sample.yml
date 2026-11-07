@@ -11,6 +11,9 @@ services:
       - "3773:3773"
 
     environment:
+      # Optional tools; for example go@1.26,python@3.13
+      # EXTRA_TOOLS: "go@1.26,python@3.13"
+
       # Available CLIs: codex,claude,opencode,gemini,qwen,kimi,copilot,pi,cline,amp
       # all = install all; none or empty string = install none
       AGENT_CLIS: "codex,claude,opencode,pi,kimi"
@@ -22,13 +25,15 @@ services:
     volumes:
       # User configuration and Agent authentication
       - t3-home:/home/node
-
-      # Installed Agent CLIs
-      - agent-cli:/opt/agent-cli
+      # Tools and Python packages persist in the home volume above.
+      # Optional: share individual directories using the same host paths in other containers.
+      # - /srv/shared/agent-cli:/home/node/agent-cli
+      # - /srv/shared/extra-tools:/home/node/extra-tools
+      # - /srv/shared/pythonlib:/home/node/pythonlib
+      # - /srv/shared/uvenvs:/home/node/uvenvs
 
       # Project workspace
       - ./workspace:/workspace
 
 volumes:
   t3-home:
-  agent-cli:

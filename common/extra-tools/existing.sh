@@ -50,6 +50,7 @@ extra_tools_detect_system() {
     while IFS= read -r binary; do
       [[ "$binary" == /* ]] || binary="$PWD/$binary"
       [[ "$binary" != "$EXTRA_TOOLS_INTERNAL_ROOT/"* ]] || continue
+      [[ "$binary" != "$EXTRA_TOOLS_INTERNAL_PROFILE/"* ]] || continue
       version="$(extra_tools_version "$name" "$binary")" || continue
       extra_tools_version_matches "$version" "$EXTRA_TOOLS_INTERNAL_REQUEST" || continue
       directory="$(extra_tools_system_directory "$name" "$binary")" || continue
@@ -90,6 +91,7 @@ extra_tools_adopt_system() (
   esac
   mkdir -p -- "$EXTRA_TOOLS_INTERNAL_ROOT/$name/releases" || return
   candidate="$(mktemp -d "$EXTRA_TOOLS_INTERNAL_ROOT/$name/releases/system-$version.XXXXXXXX")" || return
+  : >"$candidate/.installing" || return
   destination="$candidate"
   case "$name" in dotnet | bun | deno | uv) ;; *) destination+=/bin ;; esac
   mkdir -p -- "$destination" || return
@@ -100,22 +102,46 @@ extra_tools_adopt_system() (
       ln -s -- "$directory/$command" "$destination/$command" || return
     fi
   done
-  extra_tools_activate_release "$candidate" "$EXTRA_TOOLS_INTERNAL_ROOT/$name/current" "$EXTRA_TOOLS_INTERNAL_ROOT/$name/releases" || return
+  rm -- "$candidate/.installing" || return
+  printf '%s\n' "$version" >"$candidate/.version" || return
+  extra_tools_activate_release "$candidate" "$EXTRA_TOOLS_INTERNAL_PROFILE/$name/current" || return
   candidate=''
 )
 
-extra_tools_try_existing() {
-  local name="$1" wanted="${2#go}" binary version highest source
-  [[ "${TOOLS_INSTALL_MODE:-update}" != overwrite ]] || return 1
-  for source in current system; do
-    if [[ "$source" == current ]]; then
-      binary="$EXTRA_TOOLS_INTERNAL_ROOT/$name/current/$(extra_tools_relative_binary "$name")"
-      version="$EXTRA_TOOLS_INTERNAL_CURRENT_VERSION"
+extra_tools_cached_releases() {
+  local name="$1" directory version
+  for directory in "$EXTRA_TOOLS_INTERNAL_ROOT/$name/releases/"*; do
+    [[ -d "$directory" ]] || continue
+    [[ ! -e "$directory/.installing" ]] || continue
+    if [[ -f "$directory/.version" ]]; then
+      read -r version <"$directory/.version" || continue
     else
+      # Releases installed before shared storage did not have a version marker.
+      version="$(extra_tools_version "$name" "$directory/$(extra_tools_relative_binary "$name")")" || continue
+    fi
+    extra_tools_version_matches "$version" "$EXTRA_TOOLS_INTERNAL_REQUEST" || continue
+    printf '%s\t%s\n' "$version" "$directory"
+  done | sort -t $'\t' -k1,1Vr
+}
+
+extra_tools_try_existing() {
+  local name="$1" wanted="${2#go}" binary version highest source directory base
+  [[ "${TOOLS_INSTALL_MODE:-update}" != overwrite ]] || return 1
+  while IFS=$'\t' read -r source version directory; do
+    base=''
+    if [[ "$source" == current ]]; then
+      directory="$EXTRA_TOOLS_INTERNAL_PROFILE/$name/current"
+      binary="$directory/$(extra_tools_relative_binary "$name")"
+      version="$EXTRA_TOOLS_INTERNAL_CURRENT_VERSION"
+    elif [[ "$source" == system ]]; then
       binary="$EXTRA_TOOLS_INTERNAL_SYSTEM_BINARY"
       version="$EXTRA_TOOLS_INTERNAL_SYSTEM_VERSION"
+    else
+      binary="$directory/$(extra_tools_relative_binary "$name")"
+      # A cached system link may not exist in this image.
+      version="$(extra_tools_version "$name" "$binary")" || continue
     fi
-    [[ -n "$version" ]] && extra_tools_version_matches "$version" "$EXTRA_TOOLS_INTERNAL_REQUEST" || continue
+    if [[ -z "$version" ]] || ! extra_tools_version_matches "$version" "$EXTRA_TOOLS_INTERNAL_REQUEST"; then continue; fi
     if [[ -n "$wanted" ]]; then
       highest="$(printf '%s\n%s\n' "${version#go}" "$wanted" | sort -V | tail -n 1)"
       [[ "$highest" == "${version#go}" ]] || continue
@@ -123,17 +149,31 @@ extra_tools_try_existing() {
         lts | sts) [[ "${version%%.*}" == "${wanted%%.*}" ]] || continue ;;
       esac
     fi
-    if [[ "$name" == python && "${#packages[@]}" != 0 ]]; then
-      if [[ ! -f "$EXTRA_TOOLS_INTERNAL_ROOT/python/current/pyvenv.cfg" || "$source" == system ]]; then
-        extra_tools_require_uv && extra_tools_prepare_python "$binary" || return
+    if [[ "$name" == python ]]; then
+      if [[ -f "$directory/pyvenv.cfg" ]]; then
+        base="$("$binary" -c 'import sys; print(sys._base_executable)')" || continue
+        binary="$base"
+      fi
+      if [[ "$source" == system ]] || [[ -n "$base" && "${#packages[@]}" == 0 ]]; then
+        extra_tools_adopt_system "$name" "$binary" "$version" || return
+      elif [[ "$source" == cache ]]; then
+        extra_tools_activate_release "$directory" "$EXTRA_TOOLS_INTERNAL_PROFILE/$name/current" || return
       fi
       EXTRA_TOOLS_INTERNAL_INTERPRETER="$binary"
     elif [[ "$source" == system ]]; then
       extra_tools_adopt_system "$name" "$binary" "$version" || return
+    elif [[ "$source" == cache ]]; then
+      extra_tools_activate_release "$directory" "$EXTRA_TOOLS_INTERNAL_PROFILE/$name/current" || return
     fi
     EXTRA_TOOLS_INTERNAL_VERSION="$version"
     extra_tools_log "$name: reusing $source installation ($version)"
     return 0
-  done
+  done < <(
+    printf 'current\t-\t-\n'
+    while IFS=$'\t' read -r version directory; do
+      printf 'cache\t%s\t%s\n' "$version" "$directory"
+    done < <(extra_tools_cached_releases "$name")
+    printf 'system\t-\t-\n'
+  )
   return 1
 }
