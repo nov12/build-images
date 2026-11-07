@@ -29,7 +29,7 @@ RUN npm install --prefix /out/dsh --save-exact \
         "@deepseek-ai/dsh@$DSH_VERSION" \
     && npm install --prefix /out/pnpm --save-exact \
         --omit=dev --no-audit --no-fund pnpm \
-    && bash -c 'source /tmp/dsh-entrypoint.sh; dsh_trim_install /out/dsh; dsh_trim_install /out/pnpm' \
+    && bash -c 'source /tmp/dsh-entrypoint.sh; dsh_prepare_directory_picker /out/dsh; dsh_trim_install /out/dsh; dsh_trim_install /out/pnpm' \
     && hardlink --ignore-time --reflink=never --exclude '\.(node|dll|dylib)$|\.so($|\.)' /out \
     && /out/dsh/node_modules/.bin/dsh --version \
     && /out/pnpm/node_modules/.bin/pnpm --version \
@@ -97,7 +97,6 @@ ENV HOME=/home/node \
     DSH_NODE=/usr/local/bin/node \
     DSH_VERSION=latest \
     DSH_UPDATE_INTERVAL=86400 \
-    DSH_PORT=3080 \
     AGENT_CLIS=none \
     AGENT_CLI_ROOT=/home/node/.local/share/agent-cli \
     EXTRA_TOOLS_HOME=/home/node/.local/share/extra-tools \

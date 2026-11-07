@@ -4,6 +4,51 @@ set -Eeuo pipefail
 dsh_log() { printf '[dsh-init] %s\n' "$*"; }
 dsh_usable() { timeout --foreground 20s "${DSH_NODE:-node}" "$@" >/dev/null 2>&1; }
 
+dsh_prepare_directory_picker() {
+  "${DSH_NODE:-node}" --input-type=module - "$1" <<'NODE'
+import { readFileSync, writeFileSync } from 'node:fs';
+import { createRequire } from 'node:module';
+import { join, resolve } from 'node:path';
+const require = createRequire(join(resolve(process.argv[2]), 'package.json'));
+const filename = require.resolve('@deepseek-ai/dsh-host-directory-picker-browse');
+const source = readFileSync(filename, 'utf8');
+const before = 'const target = resolve(path ?? home);';
+const after = 'const target = resolve(path ?? process.cwd());';
+if (!source.includes(after)) {
+  if (source.split(before).length !== 2) {
+    throw new Error('Unsupported DSH directory picker; cannot apply the container working-directory default');
+  }
+  writeFileSync(filename, source.replace(before, after));
+}
+NODE
+}
+
+dsh_prepare_credentials() {
+  "${DSH_NODE:-node}" --input-type=module <<'NODE'
+import { closeSync, fchmodSync, fstatSync, lstatSync, mkdirSync, openSync, writeFileSync } from 'node:fs';
+import { homedir } from 'node:os';
+import { join, resolve } from 'node:path';
+const configured = process.env.DSH_HOME?.trim() ? process.env.DSH_HOME : join(homedir(), '.dsh');
+const home = resolve(configured === '~' ? homedir() : configured.replace(/^~[/\\]/, homedir() + '/'));
+mkdirSync(home, { recursive: true, mode: 0o700 });
+const filename = join(home, '.credentials.yaml');
+try {
+  const fd = openSync(filename, 'wx', 0o600);
+  try { writeFileSync(fd, 'version: 1\n'); } finally { closeSync(fd); }
+} catch (error) {
+  if (error.code !== 'EEXIST') throw error;
+}
+if (!lstatSync(filename).isFile()) throw new Error('Expected a regular credentials file: ' + filename);
+const fd = openSync(filename, 'r');
+try {
+  if ((fstatSync(fd).mode & 0o777) !== 0o600) fchmodSync(fd, 0o600);
+  if ((fstatSync(fd).mode & 0o777) !== 0o600) {
+    throw new Error('The mount does not honor mode 600 for ' + filename);
+  }
+} finally { closeSync(fd); }
+NODE
+}
+
 dsh_trim_install() {
   local directory="$1" platform pty
   platform="$("${DSH_NODE:-node}" -p 'process.platform + "-" + process.arch')" || return 1
@@ -93,7 +138,8 @@ dsh_install() (
       npm_pid=$!
       if wait "$npm_pid"; then
         npm_pid=''
-        dsh_trim_install "$stage" && dsh_usable "$stage/node_modules/.bin/dsh" --version || return 1
+        dsh_prepare_directory_picker "$stage" && dsh_trim_install "$stage" &&
+          dsh_usable "$stage/node_modules/.bin/dsh" --version || return 1
         release="${stage##*/}"
         release="$releases/${release#.stage-}"
         mv -- "$stage" "$release" || return 1
@@ -135,7 +181,7 @@ dsh_web_args() {
     done
     host="${host:-$fallback}"
   fi
-  result=(dsh web --no-open --host "$host" --port "${DSH_PORT:-3080}")
+  result=(dsh web --no-open --host "$host" --port 3080)
   [[ -z "${DSH_PUBLIC_URL:-}" ]] || result+=(--public-url "$DSH_PUBLIC_URL")
   trusted="${trusted//,/ }"
   read -r -a hosts <<<"${trusted//$'\n'/ }"
@@ -145,6 +191,7 @@ dsh_web_args() {
 main() {
   local binary common
   local -a args=()
+  umask 077
   export DSH_RUNTIME_ROOT="${DSH_RUNTIME_ROOT:-$HOME/.local/share/dsh-container}"
   export DSH_NODE="${DSH_NODE:-$(type -P node)}"
 
@@ -157,7 +204,10 @@ main() {
   # Stable DSH calls skip tool initialization and use the image's Node.
   if [[ "${0##*/}" == dsh ]]; then
     binary="$DSH_RUNTIME_ROOT/dsh/current/node_modules/.bin/dsh"
-    dsh_usable "$binary" --version || binary="${DSH_SEED_DIR:-/opt/dsh}/node_modules/.bin/dsh"
+    if ! dsh_usable "$binary" --version || ! dsh_prepare_directory_picker "$DSH_RUNTIME_ROOT/dsh/current"; then
+      binary="${DSH_SEED_DIR:-/opt/dsh}/node_modules/.bin/dsh"
+    fi
+    dsh_prepare_credentials
     exec "$DSH_NODE" "$binary" "$@"
   fi
 
