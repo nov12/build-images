@@ -395,3 +395,4 @@ jobs:
           docker buildx imagetools inspect "$image:latest" --raw > latest.json
           cmp manifest.json latest.json
           printf 'Published %s:%s and latest: %s\n' "$image" "$VERSION" "$manifest_digest" >> "$GITHUB_STEP_SUMMARY"
+          python3 .github/scripts/prune-images.py "$GITHUB_REPOSITORY_OWNER" "$PROJECT${ROLE:+-$ROLE}" --apply
