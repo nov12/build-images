@@ -1,5 +1,6 @@
 # Start: docker compose up -d
 # Web login link: docker compose logs deepseek-harness
+# DSH updates with the image: docker compose pull && docker compose up -d
 services:
   deepseek-harness:
     image: ghcr.io/nov12/deepseek-harness:latest
@@ -13,9 +14,6 @@ services:
       - "127.0.0.1:3080:3080" # Use "3080:3080" for access from other hosts.
 
     environment:
-      DSH_VERSION: "latest" # npm tag or version.
-      DSH_UPDATE_INTERVAL: "86400" # Startup update interval in seconds; 0 skips checks.
-
       # Optional tools; see docs/common.md for all supported settings.
       EXTRA_TOOLS: "" # Example: "go,python@3.13"
       PYTHON_PACKAGES: "" # Example: "requests,ruff"

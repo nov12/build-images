@@ -23,7 +23,7 @@ COPY deepseek-harness/entrypoint.sh /tmp/dsh-entrypoint.sh
 # Refresh the installation cache when upstream latest releases change, without pinning pnpm.
 ARG DEPENDENCY_CACHE_KEY
 
-# Install and trim the DSH fallback and plugin package manager before copying them.
+# Install and trim DSH and the plugin package manager before copying them.
 RUN npm install --prefix /out/dsh --save-exact \
         --omit=dev --include=optional --no-audit --no-fund \
         "@deepseek-ai/dsh@$DSH_VERSION" \
@@ -84,7 +84,7 @@ RUN set -eux; \
     usermod -g "$USER_GID" node; \
     install -d -m 0755 -o "$USER_UID" -g "$USER_GID" \
         /home/node /home/node/.local /home/node/.local/bin \
-        /home/node/.local/share/dsh-container /home/node/agent-cli /home/node/extra-tools \
+        /home/node/agent-cli /home/node/extra-tools \
         /home/node/pythonlib /home/node/uvenvs /workspace; \
     chown -R "$USER_UID:$USER_GID" /home/node
 
@@ -94,11 +94,8 @@ COPY --chmod=755 deepseek-harness/entrypoint.sh /usr/local/bin/entrypoint.sh
 RUN ln -s /usr/local/bin/entrypoint.sh /usr/local/bin/dsh
 
 ENV HOME=/home/node \
-    DSH_RUNTIME_ROOT=/home/node/.local/share/dsh-container \
     DSH_HOME=/home/node/.dsh \
     DSH_NODE=/usr/local/bin/node \
-    DSH_VERSION=latest \
-    DSH_UPDATE_INTERVAL=86400 \
     AGENT_CLIS=none \
     EXTRA_TOOLS= \
     PYTHON_PACKAGES= \

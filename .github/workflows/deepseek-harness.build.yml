@@ -139,7 +139,7 @@ jobs:
           const response = await fetch("http://127.0.0.1:3080/", { signal: AbortSignal.timeout(4000) });
           if (!response.ok && response.status !== 401) throw new Error("DSH Web startup failed");
         '
-        docker logs "$CHECK_CONTAINER" 2>&1 | grep -F 'DSH update failed; using the existing installation or image fallback' >/dev/null
+        docker exec "$CHECK_CONTAINER" sh -ec 'test ! -e "$HOME/.local/share/dsh-container"'
       check-command: |
         dsh --version
         node -p process.versions.node | grep -Fx "${{ needs.resolve.outputs.node_version }}"
