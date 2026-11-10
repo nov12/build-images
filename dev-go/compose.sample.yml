@@ -34,8 +34,9 @@ services:
       - dev-go-config:/config
 
       # User configuration and Agent authentication
+      # Tools and Python packages persist in this home volume.
       - dev-go-home:/home/${USER_NAME:-apple}
-      # Tools and Python packages persist in the home volume above.
+
       # Optional: share individual directories using the same host paths in other containers.
       # - /srv/shared/agent-cli:/home/${USER_NAME:-apple}/agent-cli
       # - /srv/shared/extra-tools:/home/${USER_NAME:-apple}/extra-tools

@@ -1,26 +1,38 @@
 # Start: docker compose up -d
 # Web login link: docker compose logs deepseek-harness
 # DSH updates with the image: docker compose pull && docker compose up -d
+
 services:
   deepseek-harness:
     image: ghcr.io/nov12/deepseek-harness:latest
     pull_policy: always
     container_name: deepseek-harness
     restart: unless-stopped
-    user: "${PUID:-666}:${PGID:-666}" # Mounts must be writable by these IDs.
+
+    # Mounts must be writable by these IDs.
+    user: "${PUID:-666}:${PGID:-666}"
 
     # Internal port stays 3080; change only the host-side port mapping.
     ports:
-      - "127.0.0.1:3080:3080" # Use "3080:3080" for access from other hosts.
+      # Use "3080:3080" for access from other hosts.
+      - "127.0.0.1:3080:3080"
 
     environment:
       # Optional tools; see docs/common.md for all supported settings.
-      EXTRA_TOOLS: "" # Example: "go,python@3.13"
-      PYTHON_PACKAGES: "" # Example: "requests,ruff"
-      TOOLS_INSTALL_MODE: "update" # skip, update, overwrite.
-      TOOLS_UPDATE_INTERVAL: "86400" # Seconds; 0 reuses installed tools.
+      # Example: "go,python@3.13"
+      EXTRA_TOOLS: ""
 
-      # Set the API key in .env or through the Web UI.
+      # Optional Python packages; example: "requests,ruff".
+      PYTHON_PACKAGES: ""
+
+      # Tool installation mode: skip, update, overwrite.
+      TOOLS_INSTALL_MODE: "update"
+
+      # Update interval in seconds; 0 reuses installed tools.
+      TOOLS_UPDATE_INTERVAL: "86400"
+
+      # Set the API key through the Web UI, or uncomment the mapping below
+      # and set DEEPSEEK_API_KEY in your shell or .env.
       # DEEPSEEK_API_KEY: "${DEEPSEEK_API_KEY}"
 
       # HTTPS reverse proxy: preserve Host and forward WebSockets.
@@ -28,19 +40,23 @@ services:
       # DSH_TRUSTED_HOSTS: "dsh.example.com,dsh.lan"
 
     volumes:
-      - dsh-home:/home/node # Settings, sessions, plugins and installed tools.
-      # Tools and Python packages persist in the home volume above.
+      # Settings, sessions, plugins and installed tools.
+      # Tools and Python packages persist in this home volume.
+      - dsh-home:/home/node
+
       # Optional: share individual directories using the same host paths in other containers.
       # - /srv/shared/agent-cli:/home/node/agent-cli
       # - /srv/shared/extra-tools:/home/node/extra-tools
       # - /srv/shared/pythonlib:/home/node/pythonlib
       # - /srv/shared/uvenvs:/home/node/uvenvs
 
-      - ./workspace:/workspace # Directory picker starts in the working directory (/workspace).
-      # - ./plugins:/plugins # Local plugins or Python packages.
+      # Directory picker starts in the working directory (/workspace).
+      - ./workspace:/workspace
 
-    # Manage plugins in the Web UI, or install a local plugin with:
-    # docker compose exec deepseek-harness dsh plugin --profile web add /plugins/my-plugin
+      # Local plugins or Python packages.
+      # Manage plugins in the Web UI, or install a local plugin with:
+      # docker compose exec deepseek-harness dsh plugin --profile web add /plugins/my-plugin
+      # - ./plugins:/plugins
 
 volumes:
   dsh-home:

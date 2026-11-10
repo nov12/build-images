@@ -1,3 +1,6 @@
+# Reverse proxy: use HTTPS outside localhost and forward WebSocket upgrades
+# After environment changes, recreate the container with docker compose up -d
+
 services:
   paseo:
     image: ghcr.io/nov12/paseo:latest
@@ -22,9 +25,6 @@ services:
       # IPs and localhost are also allowed by default
       PASEO_HOSTNAMES: "paseo.example.com,.lan"
 
-      # Reverse proxy: use HTTPS outside localhost and forward WebSocket upgrades
-      # After environment changes, recreate the container with docker compose up -d
-
       # Optional: disable the public relay when using direct connections only
       # PASEO_RELAY_ENABLED: "false"
 
@@ -46,8 +46,9 @@ services:
 
     volumes:
       # Daemon state, installed plugins and their settings, user configuration and Agent authentication
+      # Tools and Python packages persist in this home volume.
       - paseo-home:/home/node
-      # Tools and Python packages persist in the home volume above.
+
       # Optional: share individual directories using the same host paths in other containers.
       # - /srv/shared/agent-cli:/home/node/agent-cli
       # - /srv/shared/extra-tools:/home/node/extra-tools
