@@ -1,5 +1,6 @@
 # Public: HTTPS reverse proxy and external PostgreSQL.
-# Generate each .env signing secret independently: openssl rand -hex 32.
+# Supply settings via shell variables or an optional .env (see .env.example).
+# Generate each signing secret independently: openssl rand -hex 32.
 # First admin: official CLI onboarding/bootstrap in /app; restart after onboarding.
 services:
   paperclip:
@@ -12,47 +13,75 @@ services:
     stop_grace_period: 90s
 
     ports:
-      - "127.0.0.1:${PAPERCLIP_PORT:-3100}:${PAPERCLIP_PORT:-3100}"
+      - "127.0.0.1:${PAPERCLIP_PORT:-3100}:3100"
 
     environment:
-      PORT: "${PAPERCLIP_PORT:-3100}"
+      # authenticated = login required; local_trusted = no login, loopback only.
+      # This image listens on 0.0.0.0, so use authenticated for this setup.
       PAPERCLIP_DEPLOYMENT_MODE: "authenticated"
+
+      # private = LAN/VPN/Tailscale; public = internet-facing with an explicit URL.
+      # This auth policy does not change listener binding or Docker port mappings.
       PAPERCLIP_DEPLOYMENT_EXPOSURE: "public"
+
+      # auto = infer the auth URL; explicit = use the configured public URL.
+      # Public exposure requires explicit and a configured PAPERCLIP_PUBLIC_URL.
       PAPERCLIP_AUTH_BASE_URL_MODE: "explicit"
+
+      # Full external HTTPS URL used for links and authentication.
+      # Use the reverse proxy's browser-facing URL, including a nonstandard port.
       PAPERCLIP_PUBLIC_URL: "${PAPERCLIP_PUBLIC_URL:?Set PAPERCLIP_PUBLIC_URL to your HTTPS URL}"
+
+      # External PostgreSQL connection string: postgresql://user:password@host:5432/db.
+      # Required by this public sample; the private sample defaults to embedded PostgreSQL.
       DATABASE_URL: "${DATABASE_URL:?Set DATABASE_URL to your external PostgreSQL connection string}"
-      BETTER_AUTH_SECRET: "${BETTER_AUTH_SECRET:?Set BETTER_AUTH_SECRET in .env}"
-      PAPERCLIP_TOOL_ACTION_SIGNING_SECRET: "${PAPERCLIP_TOOL_ACTION_SIGNING_SECRET:?Set PAPERCLIP_TOOL_ACTION_SIGNING_SECRET in .env}"
+
+      # Signs login sessions; generate with openssl rand -hex 32 and keep it stable.
+      BETTER_AUTH_SECRET: "${BETTER_AUTH_SECRET:?Set BETTER_AUTH_SECRET in your shell or .env}"
+
+      # Signs tool-action approvals; use a separate random value and keep it stable.
+      # Rotating this value invalidates outstanding approval signatures.
+      PAPERCLIP_TOOL_ACTION_SIGNING_SECRET: "${PAPERCLIP_TOOL_ACTION_SIGNING_SECRET:?Set PAPERCLIP_TOOL_ACTION_SIGNING_SECRET in your shell or .env}"
 
       # all | none | comma-separated name[@version].
+      # Example: AGENT_CLIS: "codex@0.166.0,claude@2"
       AGENT_CLIS: "${AGENT_CLIS-codex,claude,opencode,pi,kimi}"
-      # AGENT_CLIS: "codex@0.166.0,claude@2"
-      CLI_UPDATE_INTERVAL: "${CLI_UPDATE_INTERVAL:-86400}" # 0 disables periodic checks, not startup checks.
 
-      # Optional tools/packages; uncomment as needed.
-      # EXTRA_TOOLS: "go,python@3.13,node@22,dotnet@lts"
-      # PYTHON_PACKAGES: '"requests>=2,<3",ruff'
+      # 0 disables periodic checks, not startup checks.
+      CLI_UPDATE_INTERVAL: "${CLI_UPDATE_INTERVAL:-86400}"
+
+      # Optional tools/packages; empty values disable installation.
+      EXTRA_TOOLS: "${EXTRA_TOOLS:-}"
+      PYTHON_PACKAGES: "${PYTHON_PACKAGES:-}"
+
       # Modes: skip=reuse, update=default, overwrite=reinstall.
-      # CLI_INSTALL_MODE: "update"
-      # TOOLS_INSTALL_MODE: "update"
-      # TOOLS_UPDATE_INTERVAL: "86400" # Startup checks; 0 reuses matching tools.
+      CLI_INSTALL_MODE: "${CLI_INSTALL_MODE:-update}"
+      TOOLS_INSTALL_MODE: "${TOOLS_INSTALL_MODE:-update}"
 
+      # Startup checks; 0 reuses matching tools.
+      TOOLS_UPDATE_INTERVAL: "${TOOLS_UPDATE_INTERVAL:-86400}"
+
+      # Optional provider API keys; leave blank when using CLI authentication.
       OPENAI_API_KEY: "${OPENAI_API_KEY:-}"
       ANTHROPIC_API_KEY: "${ANTHROPIC_API_KEY:-}"
       GEMINI_API_KEY: "${GEMINI_API_KEY:-}"
       GOOGLE_API_KEY: "${GOOGLE_API_KEY:-}"
 
     volumes:
-      - paperclip-data:/paperclip # Back up app state and the external database.
-      - paperclip-home:/home/node # Provider logins and optional tools.
-      # Tools and Python packages persist in the home volume above.
+      # Back up app state and the external database.
+      - paperclip-data:/paperclip
+
+      # Provider logins, optional tools and Python packages persist in this home volume.
+      - paperclip-home:/home/node
+
       # Optional: share individual directories using the same host paths in other containers.
       # - /srv/shared/agent-cli:/home/node/agent-cli
       # - /srv/shared/extra-tools:/home/node/extra-tools
       # - /srv/shared/pythonlib:/home/node/pythonlib
       # - /srv/shared/uvenvs:/home/node/uvenvs
 
-      - ./workspace:/workspace # Must be writable by PUID:PGID.
+      # Must be writable by PUID:PGID.
+      - ./workspace:/workspace
 
 volumes:
   paperclip-data:
