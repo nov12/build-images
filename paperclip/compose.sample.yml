@@ -27,6 +27,10 @@ services:
       # Use your LAN IP or domain for access from other machines.
       PAPERCLIP_PUBLIC_URL: "${PAPERCLIP_PUBLIC_URL:-http://localhost:${PAPERCLIP_PORT:-3100}}"
 
+      # Additional trusted hostnames, comma-separated; no scheme, port, or path.
+      # The hostname from PAPERCLIP_PUBLIC_URL is automatically trusted.
+      PAPERCLIP_ALLOWED_HOSTNAMES: "${PAPERCLIP_ALLOWED_HOSTNAMES:-}"
+
       # Signs login sessions; generate with openssl rand -hex 32 and keep it stable.
       BETTER_AUTH_SECRET: "${BETTER_AUTH_SECRET:?Set BETTER_AUTH_SECRET in your shell or .env}"
 

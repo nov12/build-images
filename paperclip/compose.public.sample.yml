@@ -32,6 +32,10 @@ services:
       # Use the reverse proxy's browser-facing URL, including a nonstandard port.
       PAPERCLIP_PUBLIC_URL: "${PAPERCLIP_PUBLIC_URL:?Set PAPERCLIP_PUBLIC_URL to your HTTPS URL}"
 
+      # Additional trusted hostnames, comma-separated; no scheme, port, or path.
+      # The hostname from PAPERCLIP_PUBLIC_URL is automatically trusted.
+      PAPERCLIP_ALLOWED_HOSTNAMES: "${PAPERCLIP_ALLOWED_HOSTNAMES:-}"
+
       # External PostgreSQL connection string: postgresql://user:password@host:5432/db.
       # Required by this public sample; the private sample defaults to embedded PostgreSQL.
       DATABASE_URL: "${DATABASE_URL:?Set DATABASE_URL to your external PostgreSQL connection string}"
