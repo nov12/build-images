@@ -43,14 +43,25 @@ WORKDIR /app
 # 下载本次 Action 解析出的源码提交。
 ADD https://github.com/paperclipai/paperclip.git#${PAPERCLIP_COMMIT} /app
 
+COPY paperclip/prepare-runtime.mjs /usr/local/lib/paperclip/prepare-runtime.mjs
+
+ENV npm_config_pnpmfile=/tmp/paperclip-pnpmfile.cjs \
+    npm_config_side_effects_cache=false \
+    PAPERCLIP_BUILD_NO_NATIVE_PROVIDERS=1 \
+    PAPERCLIP_SOURCE_LOCK=/tmp/paperclip-source-lock.yaml
+
 # 与上游容器一致，先同步锁文件元数据，再以 frozen lockfile 安装。
 RUN mkdir -p /usr/local/share/build-images \
     && sha256sum pnpm-lock.yaml > /usr/local/share/build-images/paperclip-source-lock.sha256 \
+    && cp pnpm-lock.yaml "$PAPERCLIP_SOURCE_LOCK" \
+    && printf 'module.exports = { hooks: require("/usr/local/lib/paperclip/prepare-runtime.mjs").hooks };\n' > "$npm_config_pnpmfile" \
+    && node /usr/local/lib/paperclip/prepare-runtime.mjs --patch-providers /app \
     && pnpm install --resolution-only --ignore-scripts --no-frozen-lockfile \
     && pnpm install --frozen-lockfile
 
 ENV PAPERCLIP_BUILD_COMMIT=${PAPERCLIP_COMMIT} \
     PAPERCLIP_BUILD_VERSION=${PAPERCLIP_VERSION} \
+    CARGO_PROFILE_RELEASE_STRIP=symbols \
     NODE_OPTIONS=--max-old-space-size=4096
 
 # server build 按当前架构编译 Rust Runner；各原生 Provider 的架构支持仍由上游决定。
@@ -62,19 +73,21 @@ RUN pnpm --filter @paperclipai/ui build \
     && test -s ui/dist/index.html \
     && rm -rf packages/paperclip-runner/runner/target
 
-# 保留上游远程 Runner 所需的固定版本运行包，与用户安装的 Agent CLI 分开管理。
-RUN PAPERCLIP_RUNNER_SOURCE_REVISION="$PAPERCLIP_COMMIT" \
-        node packages/paperclip-runner/scripts/build-provider-pack.mjs /provider-pack \
-    && chmod -R a+rX /provider-pack
+RUN node --import ./server/node_modules/tsx/dist/loader.mjs /usr/local/lib/paperclip/prepare-runtime.mjs /app /runtime/app \
+    && du -sh /app /runtime/app \
+    && du -h --max-depth=1 /runtime/app/node_modules/.pnpm | sort -h | tail -n 20 \
+    && strip --strip-unneeded /usr/local/bin/node \
+    && rm -rf /usr/local/lib/node_modules/npm/docs /usr/local/lib/node_modules/npm/man \
+    && node --version \
+    && npm --version
 
-COPY paperclip/prepare-runtime.mjs /usr/local/lib/prepare-runtime.mjs
+FROM debian:trixie-slim AS runtime-system
 
-RUN node /usr/local/lib/prepare-runtime.mjs /app /runtime/app \
-    && du -sh /app /runtime/app
+COPY --from=paperclip-builder /usr/local/bin/node /usr/local/bin/node
+COPY --from=paperclip-builder /usr/local/LICENSE /usr/local/LICENSE
+COPY --from=paperclip-builder /usr/local/lib/node_modules/npm/ /usr/local/lib/node_modules/npm/
+COPY --from=paperclip-builder /usr/local/lib/node_modules/corepack/ /usr/local/lib/node_modules/corepack/
 
-FROM node:${NODE_VERSION}-trixie-slim AS runtime-system
-
-ARG COREPACK_VERSION=latest
 ARG USER_UID=666
 ARG USER_GID=666
 
@@ -86,7 +99,6 @@ RUN apt-get update \
         coreutils \
         curl \
         findutils \
-        g++ \
         gh \
         git \
         gzip \
@@ -94,12 +106,10 @@ RUN apt-get update \
         lbzip2 \
         libatomic1 \
         libgomp1 \
-        libicu76 \
         libnss-wrapper \
         libssl3t64 \
-        make \
+        libstdc++6 \
         openssh-client \
-        pkg-config \
         procps \
         python3 \
         ripgrep \
@@ -108,28 +118,28 @@ RUN apt-get update \
         unzip \
         util-linux \
         zlib1g \
-    && rm -rf /var/lib/apt/lists/* \
-    && rm -f /usr/local/bin/yarn /usr/local/bin/yarnpkg \
-    && npm install --global --engine-strict "corepack@$COREPACK_VERSION" \
-    && corepack enable \
-    && npm cache clean --force
+    && rm -rf /var/lib/apt/lists/* /var/cache/apt/archives/* /usr/share/man /usr/share/info /usr/share/locale \
+    && find /usr/share/doc -type f ! -name 'copyright*' ! -iname '*license*' ! -iname '*notice*' -delete \
+    && find /usr/lib -type d -name __pycache__ -prune -exec rm -rf '{}' + \
+    && ln -s node /usr/local/bin/nodejs \
+    && ln -s ../lib/node_modules/npm/bin/npm-cli.js /usr/local/bin/npm \
+    && ln -s ../lib/node_modules/npm/bin/npx-cli.js /usr/local/bin/npx \
+    && ln -s ../lib/node_modules/corepack/dist/corepack.js /usr/local/bin/corepack \
+    && corepack enable
 
 # 与 Paseo 一致，默认非 root 运行，挂载目录由调用方准备好 UID/GID 权限。
 RUN set -eux; \
     if ! getent group "$USER_GID" >/dev/null; then \
         groupadd -g "$USER_GID" agent; \
     fi; \
-    if [ "$(id -u node)" != "$USER_UID" ]; then \
-        usermod -u "$USER_UID" node; \
-    fi; \
-    usermod -g "$USER_GID" node; \
+    useradd --no-log-init -u "$USER_UID" -g "$USER_GID" -d /home/node -s /bin/bash node; \
     install -d -m 0755 -o "$USER_UID" -g "$USER_GID" \
         /home/node /paperclip /home/node/agent-cli /home/node/extra-tools /home/node/pythonlib /home/node/uvenvs /workspace
 
 COPY --from=paperclip-builder --chown=${USER_UID}:${USER_GID} /runtime/app/ /app/
 COPY --from=paperclip-builder --chown=${USER_UID}:${USER_GID} /opt/corepack/ /opt/corepack/
-COPY --from=paperclip-builder /provider-pack/ /opt/paperclip-runner/provider-pack/
 COPY --from=paperclip-builder /usr/local/share/build-images/ /usr/local/share/build-images/
+COPY --from=paperclip-builder /usr/local/lib/paperclip/prepare-runtime.mjs /usr/local/lib/paperclip/prepare-runtime.mjs
 # 与 Paseo 一致，私有入口调用公共初始化，再交接固定运行时启动应用。
 COPY --chmod=755 common/ /usr/local/lib/container-common/
 COPY common/profile.sh /etc/profile.d/container-common.sh
@@ -147,7 +157,6 @@ ENV NODE_ENV=production \
     PAPERCLIP_INSTANCE_ID=default \
     PAPERCLIP_BUILD_VERSION=${PAPERCLIP_VERSION} \
     PAPERCLIP_BUILD_COMMIT=${PAPERCLIP_COMMIT} \
-    PAPERCLIP_RUNNER_REMOTE_PROVIDER_PACK_PATH=/opt/paperclip-runner/provider-pack \
     HOST=0.0.0.0 \
     PORT=3100 \
     SERVE_UI=true \
