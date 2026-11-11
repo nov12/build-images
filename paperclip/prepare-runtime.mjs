@@ -162,6 +162,17 @@ function patchProviderSources(source) {
   assert(!manifest.pnpm.onlyBuiltDependencies, "Upstream build-script allowlist requires review");
   manifest.pnpm.neverBuiltDependencies = [...new Set([...(manifest.pnpm.neverBuiltDependencies || []), "opencode-ai"])];
   fs.writeFileSync(filename, `${JSON.stringify(manifest, null, 2)}\n`);
+  patchFile(path.join(source, "ui/src/components/OnboardingWizard.tsx"), [[
+    "    const id = setupAgentId ?? crypto.randomUUID();",
+    `    const id = setupAgentId ?? (() => {
+      if (typeof crypto.randomUUID === "function") return crypto.randomUUID();
+      const bytes = crypto.getRandomValues(new Uint8Array(16));
+      bytes[6] = (bytes[6]! & 0x0f) | 0x40;
+      bytes[8] = (bytes[8]! & 0x3f) | 0x80;
+      const hex = Array.from(bytes, value => value.toString(16).padStart(2, "0")).join("");
+      return [hex.slice(0, 8), hex.slice(8, 12), hex.slice(12, 16), hex.slice(16, 20), hex.slice(20)].join("-");
+    })();`,
+  ]]);
   patchFile(path.join(source, "packages/plugins/plugin-workspace-diff/scripts/build-ui.mjs"), [[
     "  sourcemap: true,",
     "  minify: true,\n  sourcemap: false,",
@@ -201,11 +212,9 @@ function patchProviderSources(source) {
   const distributionRoot = runtime?.root ?? join(resolveRunnerProviderAssetsRoot(import.meta.url, "copilot"), platform);`,
   ]]);
   patchFile(path.join(directory, "opencode/opencode-server-driver.ts"), [
-    ["export function resolvePinnedOpenCodeCommand(", `${helper}\nexport async function resolvePinnedOpenCodeCommand(`],
-    ["): string {\n  try {\n    const platform = target.platform", "): Promise<string> {\n  try {\n    const platform = target.platform"],
-    ['    const dependencyRequire = createRequire(manifestPath);', '    const runtime = platform === process.platform && architecture === process.arch ? await paperclipImageRuntime()?.ensureProviderRuntime("opencode") : undefined;\n    const dependencyRequire = createRequire(manifestPath);'],
+    ["export function resolvePinnedOpenCodeCommand(", `${helper}\nexport function resolvePinnedOpenCodeCommand(`],
+    ['    const dependencyRequire = createRequire(manifestPath);', '    const runtime = platform === process.platform && architecture === process.arch ? paperclipImageRuntime()?.ensureProviderRuntimeSync("opencode") : undefined;\n    const dependencyRequire = createRequire(manifestPath);'],
     ['platformManifest = realpathSync(dependencyRequire.resolve(`${name}/package.json`));', 'platformManifest = realpathSync(runtime?.manifest ?? dependencyRequire.resolve(`${name}/package.json`));'],
-    ["input.options.command ?? resolvePinnedOpenCodeCommand(),", "input.options.command ?? await resolvePinnedOpenCodeCommand(),"],
   ]);
   patchFile(path.join(directory, "codex/codex-command.ts"), [[
     "  try {\n    const runnerRequire = createRequire(issuer);",
@@ -226,6 +235,7 @@ const destination = path.resolve(destinationDirectory || "/runtime/app");
 const store = path.join(source, "node_modules/.pnpm");
 const copied = new Set();
 const dependencies = new Map();
+const commands = new Map();
 const excluded = new Set(["node_modules", ".git", "__tests__", "tests", "test", "docs", "doc", "examples", "devtools", "coverage", ".cache"]);
 const dependencyArtifacts = new Set([".git", ".github", "__tests__", "tests", "test", "examples", "example", "coverage", "benchmarks", "benchmark", ".nyc_output"]);
 const platform = { os: process.platform, cpu: process.arch, libc: process.report.getReport().header.glibcVersionRuntime ? "glibc" : "musl" };
@@ -444,6 +454,16 @@ function visit(directory) {
     }
     copy(link);
     visit(fs.realpathSync(link));
+    const dependency = JSON.parse(fs.readFileSync(path.join(link, "package.json"), "utf8"));
+    const binaries = typeof dependency.bin === "string" ? { [dependency.name.split("/").pop()]: dependency.bin } : dependency.bin || {};
+    for (const [command, relative] of Object.entries(binaries)) {
+      assert.equal(path.basename(command), command, `Invalid dependency command: ${command}`);
+      const executable = path.resolve(link, relative);
+      assert(executable.startsWith(`${link}/`), `Dependency command escapes package: ${command}`);
+      const filename = path.join(directory, "node_modules/.bin", command);
+      assert(!commands.has(output(filename)), `Conflicting dependency command: ${command}`);
+      commands.set(output(filename), output(executable));
+    }
   }
 }
 
@@ -486,6 +506,13 @@ function verify(directory) {
 for (const [filename, provider] of launchers) {
   fs.mkdirSync(path.dirname(output(filename)), { recursive: true });
   fs.writeFileSync(output(filename), `#!/bin/sh\nset -eu\nexecutable="$(/usr/local/bin/node /usr/local/lib/paperclip/prepare-runtime.mjs --executable ${provider})"\nexec "$executable" "$@"\n`, { mode: 0o755 });
+}
+for (const [filename, executable] of commands) {
+  const metadata = fs.statSync(executable);
+  assert(metadata.isFile(), `Missing dependency command: ${executable}`);
+  fs.chmodSync(executable, metadata.mode | 0o111);
+  fs.mkdirSync(path.dirname(filename), { recursive: true });
+  fs.symlinkSync(path.relative(path.dirname(filename), executable), filename);
 }
 verify(destination);
 for (const relative of ["server/dist/index.js", "server/node_modules/tsx/dist/loader.mjs", "cli/node_modules/tsx/dist/cli.mjs", "packages/paperclip-runner/dist/bin/paperclip-runnerd", "packages/plugins/plugin-workspace-diff/dist/worker.js", "ui/dist/index.html"]) {
