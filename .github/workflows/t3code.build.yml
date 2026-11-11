@@ -54,6 +54,7 @@ jobs:
       - name: Check startup script syntax
         run: |
           find common -type f -name '*.sh' -print0 | xargs -0 -r -n 1 bash -n
+          node --check t3code/check-runtime.mjs
           docker compose -f t3code/compose.sample.yml config --quiet
       - name: Resolve version
         id: resolve
@@ -74,7 +75,7 @@ jobs:
             {
               printf '%s\n' "$version" "$commit" "$NODE_VERSION"
               find common -type f -print0 | LC_ALL=C sort -z | xargs -0 sha256sum
-              sha256sum .github/scripts/resolve-toolchains.sh t3code/Dockerfile \
+              sha256sum .github/scripts/resolve-toolchains.sh t3code/Dockerfile t3code/check-runtime.mjs \
                 .github/workflows/t3code.build.yml .github/workflows/docker-release.yml
             } | sha256sum | cut -d ' ' -f1
           )"
@@ -99,12 +100,22 @@ jobs:
       check-command: |
         find /usr/local/lib/container-common -type f -name '*.sh' -print0 | xargs -0 -r -n 1 bash -n
         AGENT_CLIS=none CLI_UPDATE_INTERVAL=0 /usr/local/lib/container-common/entrypoint.sh t3 --help >/dev/null
+        T3_EXPECTED_VERSION=${{ needs.resolve.outputs.version }} node /usr/local/lib/t3code/check-runtime.mjs
+      check-startup: true
+      startup-command: |
+        docker run -d --network none \
+          -e AGENT_CLIS=none -e EXTRA_TOOLS=none -e PYTHON_PACKAGES=none \
+          -e CLI_UPDATE_INTERVAL=0 -e T3CODE_TELEMETRY_DISABLED=1 \
+          "$CHECK_IMAGE" t3 serve --host 127.0.0.1 --port 3773
+      startup-check-command: |
+        docker exec "$CHECK_CONTAINER" node /usr/local/lib/t3code/check-runtime.mjs --http
       upstream-revision: ${{ needs.resolve.outputs.upstream_commit }}
       upstream-repository: pingdotgg/t3code
       upstream-version-prefix: t3-
       version: ${{ needs.resolve.outputs.version }}
       build-args: |
         NODE_VERSION=${{ needs.resolve.outputs.node_version }}
+        T3_COMMIT=${{ needs.resolve.outputs.upstream_commit }}
         ${{ needs.resolve.outputs.args }}
       build-key: ${{ needs.resolve.outputs.build_key }}
       security-rebuild: ${{ github.event_name == 'schedule' || github.event_name == 'workflow_dispatch' }}
@@ -112,7 +123,7 @@ jobs:
       record-command: |
         node --version
         npm --version
-        sha256sum /opt/t3/t3
+        sha256sum /opt/t3/t3 /opt/t3/bin.mjs
         find /usr/local/share/build-images -type f -print -exec cat {} \;
         dpkg-query -W
       publish: ${{ github.event_name != 'pull_request' && github.ref == format('refs/heads/{0}', github.event.repository.default_branch) }}

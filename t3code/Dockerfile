@@ -2,8 +2,8 @@
 
 ARG NODE_VERSION=lts
 
-# 下载并校验官方 T3 Code
-FROM --platform=$BUILDPLATFORM alpine:3 AS t3-builder
+# 保留同版本官方前端和原生组件，不携带其中的 Node 运行时。
+FROM --platform=$BUILDPLATFORM alpine:3 AS t3-assets
 
 RUN apk add --no-cache \
     ca-certificates \
@@ -38,13 +38,48 @@ RUN set -eux; \
     \
     tar -xzf "$ASSET" -C /opt/t3 --strip-components=1; \
     test -x /opt/t3/t3; \
+    rm /opt/t3/t3; \
     rm -rf /opt/t3/node_modules/@ff-labs/fff-bin-linux-*-musl \
         /opt/t3/node_modules/node-pty/src \
         /opt/t3/node_modules/node-pty/third_party
 
+# 服务端使用上游普通 JS 构建模式，与最终镜像共用 Node。
+FROM --platform=$BUILDPLATFORM node:${NODE_VERSION}-trixie-slim AS t3-server-builder
+
+RUN apt-get update \
+    && apt-get install -y --no-install-recommends ca-certificates git \
+    && rm -rf /var/lib/apt/lists/*
+
+ARG T3_VERSION
+ARG T3_COMMIT
+
+WORKDIR /src
+
+RUN test -n "$T3_VERSION" \
+    && git init . \
+    && git remote add origin https://github.com/pingdotgg/t3code.git \
+    && git sparse-checkout set --no-cone '/*' '!/.repos/' \
+    && git fetch --depth=1 --filter=blob:none origin "${T3_COMMIT:-refs/tags/v${T3_VERSION}}" \
+    && git checkout --detach FETCH_HEAD \
+    && { test -z "$T3_COMMIT" || test "$(git rev-parse HEAD)" = "$T3_COMMIT"; } \
+    && npm install --global --engine-strict "$(node -p 'require("./package.json").packageManager')"
+
+RUN --mount=type=cache,target=/root/.cache/pnpm \
+    pnpm install --frozen-lockfile --ignore-scripts \
+        --filter t3... --filter @t3tools/scripts... \
+        --store-dir /root/.cache/pnpm/store \
+    && node scripts/update-release-package-versions.ts "$T3_VERSION" \
+    && cp .env.example .env \
+    && pnpm --filter t3 run build:bundle \
+    && test -s apps/server/dist/bin.mjs \
+    && test -s apps/server/dist/claude-history-worker.mjs \
+    && mkdir -p /out \
+    && cp -a apps/server/dist/. /out/
+
 # 运行环境
 FROM node:${NODE_VERSION}-trixie-slim AS runtime-system
 
+ARG T3_VERSION
 ARG USER_UID=666
 ARG USER_GID=666
 
@@ -87,12 +122,18 @@ RUN set -eux; \
         -o "$USER_UID" -g "$USER_GID" \
         /home/node /home/node/agent-cli /home/node/extra-tools /home/node/pythonlib /home/node/uvenvs /workspace
 
-# 只复制 T3 的正式发行程序
-COPY --from=t3-builder /opt/t3/ /opt/t3/
-COPY --from=t3-builder /tmp/download/SHA256SUMS /usr/local/share/build-images/t3-SHA256SUMS
+COPY --from=t3-assets /opt/t3/ /opt/t3/
+COPY --from=t3-assets /tmp/download/SHA256SUMS /usr/local/share/build-images/t3-SHA256SUMS
+COPY --from=t3-server-builder /out/ /opt/t3/
+COPY t3code/check-runtime.mjs /usr/local/lib/t3code/check-runtime.mjs
+COPY --chmod=755 <<'SH' /opt/t3/t3
+#!/bin/sh
+script_dir="$(dirname -- "$(readlink -f -- "$0")")"
+exec /usr/local/bin/node "$script_dir/bin.mjs" "$@"
+SH
 
-# 构建期检查发行程序能否启动
-RUN /opt/t3/t3 --help >/dev/null
+RUN /opt/t3/t3 --help >/dev/null \
+    && test "$(/opt/t3/t3 --version)" = "t3 v${T3_VERSION}"
 
 ENV HOME=/home/node \
     PATH="/opt/t3:/home/node/agent-cli/bin:/tmp/extra-tools/bin:/home/node/pythonlib/bin:/home/node/.local/bin:${PATH}" \
