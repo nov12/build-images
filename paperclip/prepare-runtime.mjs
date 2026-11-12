@@ -155,6 +155,55 @@ function patchFile(filename, replacements) {
   fs.writeFileSync(filename, contents);
 }
 
+function patchBrowserCrypto(source) {
+  const ui = path.join(source, "ui/src");
+  // Install before the app's imports so browser crypto callers share the HTTP fallback.
+  fs.writeFileSync(path.join(ui, "lib/image-crypto.ts"), `const insecureHttp = globalThis.location?.protocol === "http:" && globalThis.isSecureContext === false;
+const webCrypto = globalThis.crypto;
+if (insecureHttp && webCrypto && typeof webCrypto.randomUUID !== "function") {
+  webCrypto.randomUUID = () => {
+    const bytes = webCrypto.getRandomValues(new Uint8Array(16));
+    bytes[6] = (bytes[6]! & 0x0f) | 0x40;
+    bytes[8] = (bytes[8]! & 0x3f) | 0x80;
+    const hex = Array.from(bytes, value => value.toString(16).padStart(2, "0")).join("");
+    return \`\${hex.slice(0, 8)}-\${hex.slice(8, 12)}-\${hex.slice(12, 16)}-\${hex.slice(16, 20)}-\${hex.slice(20)}\`;
+  };
+}
+if (insecureHttp && webCrypto && !webCrypto.subtle) {
+  const digest = async (algorithm: AlgorithmIdentifier, data: BufferSource): Promise<ArrayBuffer> => {
+    const name = typeof algorithm === "string" ? algorithm : algorithm.name;
+    if (name.toUpperCase() !== "SHA-256") throw new DOMException("Unsupported digest algorithm: " + name, "NotSupportedError");
+    const input = ArrayBuffer.isView(data)
+      ? new Uint8Array(data.buffer, data.byteOffset, data.byteLength)
+      : new Uint8Array(data);
+    // Match native digest: capture the input before awaiting the lazy module.
+    const snapshot = input.slice();
+    const { hash } = await import("./image-sha256.js");
+    return Uint8Array.from(hash(snapshot)).buffer;
+  };
+  // This supplies digest only; other WebCrypto operations still require HTTPS.
+  Object.defineProperty(webCrypto, "subtle", { value: { digest }, configurable: true });
+}
+export {};
+`, { flag: "wx" });
+  const entry = path.join(ui, "main.tsx");
+  fs.writeFileSync(entry, `import "./lib/image-crypto";\n${fs.readFileSync(entry, "utf8")}`);
+}
+
+function prepareBrowserDigest(source) {
+  // Reuse the upstream dependency and its installed version without changing manifests.
+  const serverRequire = createRequire(path.join(source, "server/package.json"));
+  const hash = createRequire(serverRequire.resolve("svix")).resolve("fast-sha256");
+  const { buildSync } = createRequire(path.join(source, "package.json"))("esbuild");
+  const ui = path.join(source, "ui/src/lib");
+  buildSync({
+    stdin: { contents: `export { hash } from ${JSON.stringify(hash)};`, resolveDir: source },
+    outfile: path.join(ui, "image-sha256.js"),
+    bundle: true, platform: "browser", format: "esm", target: "es2022", minify: true,
+  });
+  fs.writeFileSync(path.join(ui, "image-sha256.d.ts"), "export function hash(data: Uint8Array): Uint8Array;\n");
+}
+
 function patchProviderSources(source) {
   const filename = path.join(source, "package.json");
   const manifest = JSON.parse(fs.readFileSync(filename, "utf8"));
@@ -162,17 +211,7 @@ function patchProviderSources(source) {
   assert(!manifest.pnpm.onlyBuiltDependencies, "Upstream build-script allowlist requires review");
   manifest.pnpm.neverBuiltDependencies = [...new Set([...(manifest.pnpm.neverBuiltDependencies || []), "opencode-ai"])];
   fs.writeFileSync(filename, `${JSON.stringify(manifest, null, 2)}\n`);
-  patchFile(path.join(source, "ui/src/components/OnboardingWizard.tsx"), [[
-    "    const id = setupAgentId ?? crypto.randomUUID();",
-    `    const id = setupAgentId ?? (() => {
-      if (typeof crypto.randomUUID === "function") return crypto.randomUUID();
-      const bytes = crypto.getRandomValues(new Uint8Array(16));
-      bytes[6] = (bytes[6]! & 0x0f) | 0x40;
-      bytes[8] = (bytes[8]! & 0x3f) | 0x80;
-      const hex = Array.from(bytes, value => value.toString(16).padStart(2, "0")).join("");
-      return [hex.slice(0, 8), hex.slice(8, 12), hex.slice(12, 16), hex.slice(16, 20), hex.slice(20)].join("-");
-    })();`,
-  ]]);
+  patchBrowserCrypto(source);
   patchFile(path.join(source, "packages/plugins/plugin-workspace-diff/scripts/build-ui.mjs"), [[
     "  sourcemap: true,",
     "  minify: true,\n  sourcemap: false,",
@@ -534,6 +573,7 @@ console.log(`Prepared ${dependencies.size} runtime workspaces and ${copied.size 
 async function main() {
   const [mode, ...args] = process.argv.slice(2);
   if (mode === "--patch-providers") return patchProviderSources(fs.realpathSync(args[0] || "/app"));
+  if (mode === "--prepare-browser-digest") return prepareBrowserDigest(fs.realpathSync(args[0] || "/app"));
   if (mode === "--hydrate") return hydrateProvider(args[0]);
   if (mode === "--executable") {
     const runtime = await ensureProviderRuntime(args[0]);

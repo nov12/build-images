@@ -57,7 +57,8 @@ RUN mkdir -p /usr/local/share/build-images \
     && printf 'module.exports = { hooks: require("/usr/local/lib/paperclip/prepare-runtime.mjs").hooks };\n' > "$npm_config_pnpmfile" \
     && node /usr/local/lib/paperclip/prepare-runtime.mjs --patch-providers /app \
     && pnpm install --resolution-only --ignore-scripts --no-frozen-lockfile \
-    && pnpm install --frozen-lockfile
+    && pnpm install --frozen-lockfile \
+    && node /usr/local/lib/paperclip/prepare-runtime.mjs --prepare-browser-digest /app
 
 ENV PAPERCLIP_BUILD_COMMIT=${PAPERCLIP_COMMIT} \
     PAPERCLIP_BUILD_VERSION=${PAPERCLIP_VERSION} \
