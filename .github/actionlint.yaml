@@ -1,0 +1,6 @@
+# These GitHub-hosted labels are GA but not yet built into actionlint 1.7.12.
+# This allowlist affects linting only; the workflows use GitHub-hosted runners.
+self-hosted-runner:
+  labels:
+    - ubuntu-26.04
+    - ubuntu-26.04-arm

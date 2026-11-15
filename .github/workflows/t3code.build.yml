@@ -7,6 +7,7 @@ on:
       - "t3code/**"
       - "common/**"
       - ".github/scripts/resolve-toolchains.sh"
+      - ".github/scripts/resolve-release.py"
       - ".github/workflows/t3code.build.yml"
       - ".github/workflows/docker-release.yml"
   push:
@@ -15,6 +16,7 @@ on:
       - "t3code/**"
       - "common/**"
       - ".github/scripts/resolve-toolchains.sh"
+      - ".github/scripts/resolve-release.py"
       - ".github/workflows/t3code.build.yml"
       - ".github/workflows/docker-release.yml"
   schedule:
@@ -30,7 +32,7 @@ concurrency:
 
 jobs:
   resolve:
-    runs-on: ubuntu-24.04
+    runs-on: ubuntu-26.04
     timeout-minutes: 10
     outputs:
       version: ${{ steps.resolve.outputs.version }}
@@ -63,7 +65,7 @@ jobs:
           NODE_VERSION: ${{ steps.toolchains.outputs.node_version }}
         run: |
           set -euo pipefail
-          tag="$(gh api repos/pingdotgg/t3code/releases/latest --jq .tag_name)"
+          tag="$(python3 .github/scripts/resolve-release.py pingdotgg/t3code)"
           [[ "$tag" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]]
           commit="$(gh api "repos/pingdotgg/t3code/commits/$tag" --jq .sha)"
           [[ "$commit" =~ ^[a-f0-9]{40}$ ]]
@@ -75,7 +77,7 @@ jobs:
             {
               printf '%s\n' "$version" "$commit" "$NODE_VERSION"
               find common -type f -print0 | LC_ALL=C sort -z | xargs -0 sha256sum
-              sha256sum .github/scripts/resolve-toolchains.sh t3code/Dockerfile t3code/check-runtime.mjs \
+              sha256sum .github/scripts/resolve-toolchains.sh .github/scripts/resolve-release.py t3code/Dockerfile t3code/check-runtime.mjs \
                 .github/workflows/t3code.build.yml .github/workflows/docker-release.yml
             } | sha256sum | cut -d ' ' -f1
           )"

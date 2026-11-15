@@ -7,6 +7,7 @@ on:
       - "aionui/**"
       - "common/**"
       - ".github/scripts/resolve-toolchains.sh"
+      - ".github/scripts/resolve-release.py"
       - ".github/workflows/aionui.build.yml"
       - ".github/workflows/docker-release.yml"
   push:
@@ -15,6 +16,7 @@ on:
       - "aionui/**"
       - "common/**"
       - ".github/scripts/resolve-toolchains.sh"
+      - ".github/scripts/resolve-release.py"
       - ".github/workflows/aionui.build.yml"
       - ".github/workflows/docker-release.yml"
   schedule:
@@ -30,7 +32,7 @@ concurrency:
 
 jobs:
   resolve:
-    runs-on: ubuntu-24.04
+    runs-on: ubuntu-26.04
     timeout-minutes: 10
     outputs:
       version: ${{ steps.resolve.outputs.version }}
@@ -68,24 +70,28 @@ jobs:
           BUN_VERSION: ${{ steps.toolchains.outputs.bun_version }}
         run: |
           set -euo pipefail
-          tag="$(gh api repos/iOfficeAI/AionUi/releases/latest --jq .tag_name)"
+          tag="$(python3 .github/scripts/resolve-release.py iOfficeAI/AionUi)"
           [[ "$tag" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]]
           commit="$(gh api "repos/iOfficeAI/AionUi/commits/$tag" --jq .sha)"
           [[ "$commit" =~ ^[a-f0-9]{40}$ ]]
-          echo "tag=$tag" >> "$GITHUB_OUTPUT"
-          echo "commit=$commit" >> "$GITHUB_OUTPUT"
+          {
+            echo "tag=$tag"
+            echo "commit=$commit"
+          } >> "$GITHUB_OUTPUT"
           version="${tag#v}"
           build_key="$(
             {
               printf '%s\n' "$version" "$commit" "$NODE_VERSION" "$BUN_VERSION"
               find common -type f -print0 | LC_ALL=C sort -z | xargs -0 sha256sum
-              sha256sum .github/scripts/resolve-toolchains.sh aionui/Dockerfile aionui/entrypoint.sh \
+              sha256sum .github/scripts/resolve-toolchains.sh .github/scripts/resolve-release.py aionui/Dockerfile aionui/entrypoint.sh \
                 .github/workflows/aionui.build.yml .github/workflows/docker-release.yml
             } | sha256sum | cut -d ' ' -f1
           )"
-          echo "build_key=$build_key" >> "$GITHUB_OUTPUT"
-          echo "version=$version" >> "$GITHUB_OUTPUT"
-          echo 'build=true' >> "$GITHUB_OUTPUT"
+          {
+            echo "build_key=$build_key"
+            echo "version=$version"
+            echo 'build=true'
+          } >> "$GITHUB_OUTPUT"
       - name: Checkout upstream release
         id: upstream
         uses: actions/checkout@v7
@@ -129,7 +135,7 @@ jobs:
   assets:
     needs: resolve
     if: needs.resolve.outputs.build == 'true'
-    runs-on: ubuntu-24.04
+    runs-on: ubuntu-26.04
     timeout-minutes: 30
     steps:
       - name: Checkout image repository

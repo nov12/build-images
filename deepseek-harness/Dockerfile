@@ -6,7 +6,8 @@ FROM ghcr.io/astral-sh/uv:${UV_VERSION} AS uv
 
 FROM node:${NODE_VERSION}-trixie-slim AS dsh-builder
 
-ARG DSH_VERSION=latest
+ARG DSH_VERSION
+ARG PNPM_VERSION=latest
 
 RUN apt-get update \
     && apt-get install -y --no-install-recommends \
@@ -20,15 +21,16 @@ RUN apt-get update \
 
 COPY deepseek-harness/entrypoint.sh /tmp/dsh-entrypoint.sh
 
-# Refresh the installation cache when upstream latest releases change, without pinning pnpm.
-ARG DEPENDENCY_CACHE_KEY
+# Refresh the installation cache when the resolved release or toolchains change.
+ARG DEPENDENCY_CACHE_REVISION
 
 # Install and trim DSH and the plugin package manager before copying them.
-RUN npm install --prefix /out/dsh --save-exact \
+RUN test -n "$DSH_VERSION" \
+    && npm install --prefix /out/dsh --save-exact \
         --omit=dev --include=optional --no-audit --no-fund \
         "@deepseek-ai/dsh@$DSH_VERSION" \
     && npm install --prefix /out/pnpm --save-exact \
-        --omit=dev --no-audit --no-fund pnpm \
+        --omit=dev --no-audit --no-fund "pnpm@$PNPM_VERSION" \
     && bash -c 'source /tmp/dsh-entrypoint.sh; dsh_prepare_directory_picker /out/dsh; dsh_trim_install /out/dsh; dsh_trim_install /out/pnpm' \
     && hardlink --ignore-time --reflink=never --exclude '\.(node|dll|dylib)$|\.so($|\.)' /out \
     && /out/dsh/node_modules/.bin/dsh --version \

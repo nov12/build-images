@@ -7,6 +7,7 @@ on:
       - "deepseek-harness/**"
       - "common/**"
       - ".github/scripts/resolve-toolchains.sh"
+      - ".github/scripts/resolve-release.py"
       - ".github/workflows/deepseek-harness.build.yml"
       - ".github/workflows/docker-release.yml"
   push:
@@ -15,6 +16,7 @@ on:
       - "deepseek-harness/**"
       - "common/**"
       - ".github/scripts/resolve-toolchains.sh"
+      - ".github/scripts/resolve-release.py"
       - ".github/workflows/deepseek-harness.build.yml"
       - ".github/workflows/docker-release.yml"
   schedule:
@@ -30,7 +32,7 @@ concurrency:
 
 jobs:
   resolve:
-    runs-on: ubuntu-24.04
+    runs-on: ubuntu-26.04
     timeout-minutes: 15
     outputs:
       version: ${{ steps.resolve.outputs.version }}
@@ -53,9 +55,10 @@ jobs:
           bash -n .github/scripts/resolve-toolchains.sh
           bash .github/scripts/resolve-toolchains.sh
       - name: Set up Node
-        uses: actions/setup-node@v6
+        uses: actions/setup-node@v7
         with:
           node-version: ${{ steps.toolchains.outputs.node_version }}
+          package-manager-cache: false
       - name: Check configuration
         run: |
           set -euo pipefail
@@ -69,12 +72,18 @@ jobs:
           NODE_VERSION: ${{ steps.toolchains.outputs.node_version }}
         run: |
           set -euo pipefail
-          version="$(npm view @deepseek-ai/dsh@latest version)"
+          # DSH releases are currently prereleases; /releases/latest excludes them.
+          tag="$(python3 .github/scripts/resolve-release.py deepseek-ai/deepseek-harness --tag-prefix dsh-v --include-prereleases)"
+          version="${tag#dsh-v}"
           [[ "$version" =~ ^[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z.-]+)?$ ]]
+          commit="$(gh api "repos/deepseek-ai/deepseek-harness/commits/$tag" --jq .sha)"
+          [[ "$commit" =~ ^[a-f0-9]{40}$ ]]
+          # npm supplies the exact package selected by GitHub, not the release policy.
           npm view "@deepseek-ai/dsh@$version" version dist.integrity gitHead --json > dsh-release.json
+          test "$(jq -er .version dsh-release.json)" = "$version"
           integrity="$(jq -er '."dist.integrity" | select(startswith("sha512-"))' dsh-release.json)"
-          commit="$(jq -r '.gitHead // ""' dsh-release.json)"
-          [[ -z "$commit" || "$commit" =~ ^[a-f0-9]{40}$ ]]
+          printf 'DSH source release: https://github.com/deepseek-ai/deepseek-harness/releases/tag/%s; commit: %s\n' \
+            "$tag" "$commit" >> "$GITHUB_STEP_SUMMARY"
           cat dsh-release.json >> "$GITHUB_STEP_SUMMARY"
           pnpm_version="$(npm view pnpm@latest version)"
           [[ "$pnpm_version" =~ ^[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z.-]+)?$ ]]
@@ -85,7 +94,7 @@ jobs:
             {
               printf '%s\n' "$version" "$integrity" "$commit" "$pnpm_version" "$uv_version" "$NODE_VERSION"
               find common -type f -print0 | LC_ALL=C sort -z | xargs -0 sha256sum
-              sha256sum .github/scripts/resolve-toolchains.sh deepseek-harness/Dockerfile deepseek-harness/entrypoint.sh \
+              sha256sum .github/scripts/resolve-toolchains.sh .github/scripts/resolve-release.py deepseek-harness/Dockerfile deepseek-harness/entrypoint.sh \
                 .github/workflows/deepseek-harness.build.yml .github/workflows/docker-release.yml
             } | sha256sum | cut -d ' ' -f1
           )"
@@ -97,8 +106,9 @@ jobs:
             echo 'build=true'
             echo 'args<<BUILD_ARGS'
             echo "DSH_VERSION=$version"
+            echo "PNPM_VERSION=$pnpm_version"
             echo "UV_VERSION=$uv_version"
-            echo "DEPENDENCY_CACHE_KEY=$build_key"
+            echo "DEPENDENCY_CACHE_REVISION=$build_key"
             echo BUILD_ARGS
           } >> "$GITHUB_OUTPUT"
 
@@ -113,6 +123,10 @@ jobs:
         /home/node
       context: .
       upstream-revision: ${{ needs.resolve.outputs.upstream_commit }}
+      upstream-repository: deepseek-ai/deepseek-harness
+      upstream-tag-prefix: dsh-v
+      upstream-version-prefix: dsh-
+      upstream-include-prereleases: true
       version: ${{ needs.resolve.outputs.version }}
       build-args: |
         NODE_VERSION=${{ needs.resolve.outputs.node_version }}
