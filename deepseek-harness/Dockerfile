@@ -20,6 +20,8 @@ RUN apt-get update \
     && rm -rf /var/lib/apt/lists/*
 
 COPY deepseek-harness/entrypoint.sh /tmp/dsh-entrypoint.sh
+COPY deepseek-harness/web-compat.mjs /usr/local/lib/dsh-web-compat.mjs
+COPY deepseek-harness/web-compat.test.mjs /tmp/dsh-web-compat.test.mjs
 
 # Refresh the installation cache when the resolved release or toolchains change.
 ARG DEPENDENCY_CACHE_REVISION
@@ -31,6 +33,8 @@ RUN test -n "$DSH_VERSION" \
         "@deepseek-ai/dsh@$DSH_VERSION" \
     && npm install --prefix /out/pnpm --save-exact \
         --omit=dev --no-audit --no-fund "pnpm@$PNPM_VERSION" \
+    && node /usr/local/lib/dsh-web-compat.mjs /out/dsh \
+    && node /tmp/dsh-web-compat.test.mjs /out/dsh /usr/local/lib/dsh-web-compat.mjs \
     && bash -c 'source /tmp/dsh-entrypoint.sh; dsh_prepare_directory_picker /out/dsh; dsh_trim_install /out/dsh; dsh_trim_install /out/pnpm' \
     && hardlink --ignore-time --reflink=never --exclude '\.(node|dll|dylib)$|\.so($|\.)' /out \
     && /out/dsh/node_modules/.bin/dsh --version \
@@ -79,6 +83,7 @@ COPY --from=uv /uv /uvx /usr/local/bin/
 # Copy both outputs together so duplicate package files retain their hardlinks.
 COPY --from=dsh-builder /out/ /opt/
 COPY --from=dsh-builder /build-record/ /usr/local/share/build-images/
+COPY --from=dsh-builder /usr/local/lib/dsh-web-compat.mjs /usr/local/lib/dsh-web-compat.mjs
 
 RUN set -eux; \
     if ! getent group "$USER_GID" >/dev/null; then groupadd -g "$USER_GID" agent; fi; \
