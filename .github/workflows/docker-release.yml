@@ -75,6 +75,12 @@ on:
       upstream-version-prefix:
         type: string
         default: ""
+      upstream-tag-prefix:
+        type: string
+        default: v
+      upstream-include-prereleases:
+        type: boolean
+        default: false
       publish:
         type: boolean
         default: false
@@ -95,9 +101,9 @@ jobs:
         role: ${{ fromJSON(inputs.roles) }}
         include:
           - arch: amd64
-            runner: ubuntu-24.04
+            runner: ubuntu-26.04
           - arch: arm64
-            runner: ubuntu-24.04-arm
+            runner: ubuntu-26.04-arm
     runs-on: ${{ matrix.runner }}
     timeout-minutes: 45
     steps:
@@ -323,7 +329,7 @@ jobs:
     permissions:
       contents: read
       packages: write
-    runs-on: ubuntu-24.04
+    runs-on: ubuntu-26.04
     timeout-minutes: 10
     strategy:
       fail-fast: false
@@ -357,6 +363,8 @@ jobs:
           BUILD_KEY: ${{ inputs.build-key }}
           UPSTREAM_REPOSITORY: ${{ inputs.upstream-repository }}
           UPSTREAM_VERSION_PREFIX: ${{ inputs.upstream-version-prefix }}
+          UPSTREAM_TAG_PREFIX: ${{ inputs.upstream-tag-prefix }}
+          UPSTREAM_INCLUDE_PRERELEASES: ${{ inputs.upstream-include-prereleases }}
           RECORD_BUILD: ${{ inputs.record-build }}
         run: |
           set -euo pipefail
@@ -387,8 +395,12 @@ jobs:
             exit 0
           fi
           if [[ -n "$UPSTREAM_REPOSITORY" ]]; then
-            current="$(gh api "repos/$UPSTREAM_REPOSITORY/releases/latest" --jq .tag_name)"
-            test "${UPSTREAM_VERSION_PREFIX}${current#v}" = "$VERSION"
+            release_args=("$UPSTREAM_REPOSITORY" --tag-prefix "$UPSTREAM_TAG_PREFIX")
+            if [[ "$UPSTREAM_INCLUDE_PRERELEASES" == true ]]; then
+              release_args+=(--include-prereleases)
+            fi
+            current="$(python3 .github/scripts/resolve-release.py "${release_args[@]}")"
+            test "${UPSTREAM_VERSION_PREFIX}${current#"$UPSTREAM_TAG_PREFIX"}" = "$VERSION"
           fi
           manifest_digest="sha256:$(sha256sum manifest.json | cut -d ' ' -f1)"
           docker buildx imagetools create --tag "$image:latest" "$image@$manifest_digest"

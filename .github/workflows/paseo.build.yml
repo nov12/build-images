@@ -7,6 +7,7 @@ on:
       - "paseo/**"
       - "common/**"
       - ".github/scripts/resolve-toolchains.sh"
+      - ".github/scripts/resolve-release.py"
       - ".github/workflows/paseo.build.yml"
       - ".github/workflows/docker-release.yml"
   push:
@@ -15,6 +16,7 @@ on:
       - "paseo/**"
       - "common/**"
       - ".github/scripts/resolve-toolchains.sh"
+      - ".github/scripts/resolve-release.py"
       - ".github/workflows/paseo.build.yml"
       - ".github/workflows/docker-release.yml"
   schedule:
@@ -30,7 +32,7 @@ concurrency:
 
 jobs:
   resolve:
-    runs-on: ubuntu-24.04
+    runs-on: ubuntu-26.04
     timeout-minutes: 10
     outputs:
       version: ${{ steps.resolve.outputs.version }}
@@ -64,7 +66,7 @@ jobs:
           NODE_VERSION: ${{ steps.toolchains.outputs.node_version }}
         run: |
           set -euo pipefail
-          tag="$(gh api repos/getpaseo/paseo/releases/latest --jq .tag_name)"
+          tag="$(python3 .github/scripts/resolve-release.py getpaseo/paseo)"
           [[ "$tag" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]]
           commit="$(gh api "repos/getpaseo/paseo/commits/$tag" --jq .sha)"
           [[ "$commit" =~ ^[a-f0-9]{40}$ ]]
@@ -77,7 +79,7 @@ jobs:
             {
               printf '%s\n' "$version" "$commit" "$NODE_VERSION"
               find common -type f -print0 | LC_ALL=C sort -z | xargs -0 sha256sum
-              sha256sum .github/scripts/resolve-toolchains.sh paseo/Dockerfile paseo/entrypoint.sh paseo/plugins.mjs \
+              sha256sum .github/scripts/resolve-toolchains.sh .github/scripts/resolve-release.py paseo/Dockerfile paseo/entrypoint.sh paseo/plugins.mjs \
                 .github/workflows/paseo.build.yml .github/workflows/docker-release.yml
             } | sha256sum | cut -d ' ' -f1
           )"
