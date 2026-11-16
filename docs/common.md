@@ -32,11 +32,11 @@
 
 | 环境变量 | 默认值 | 用法 |
 | --- | --- | --- |
-| `AGENT_CLIS` | `codex,claude,opencode` | 如 `codex@0.166.0,claude@2.1.317`；`all` 安装常规全集；空值或 `none` 不安装、不更新 |
+| `AGENT_CLIS` | `codex,claude,opencode` | 如 `codex@0.166.0,claude@2.1.317`；`all` 安装全部支持的 CLI；空值或 `none` 不安装、不更新 |
 | `EXTRA_TOOLS` | 空 | 如 `go@1.26,rust,node@24,python@3.13`；空值或 `none` 不安装新工具 |
 | `PYTHON_PACKAGES` | 空 | 如 `requests,ruff`；自动启用 Python，在独立虚拟环境安装 |
 
-- CLI：`codex`、`claude`、`opencode`、`gemini`、`qwen`、`kimi`、`copilot`、`pi`、`cline`、`amp`；`agy` 需显式选择，或通过 `AGENT_CLI_ALL_EXTRA=agy` 加入 `all`，目前不支持指定版本。
+- CLI：`codex`、`claude`、`opencode`、`gemini`、`qwen`、`kimi`、`copilot`、`pi`、`cline`、`amp`、`agy`（Antigravity）；`all` 包含全部十一项，`agy` 目前不支持指定版本。
 - 开发工具：`go`、`dotnet`、`python`、`uv`、`rust`、`node`（npm/npx）、`bun`（bunx）、`deno`、`java`（Temurin JDK）。Node、.NET、Java 默认 LTS，其余默认稳定版。
 - CLI 和开发工具统一使用 `名称@版本`：完整版本固定不追新版，主版本或次版本选择该范围内的最新稳定版；未指定则按默认频道。重复名称只处理第一项。
 - Python 包的范围若含逗号，保留内层引号，例如 `PYTHON_PACKAGES='"requests>=2,<3",ruff'`。未启用的已有缓存不会被卸载。

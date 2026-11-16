@@ -322,8 +322,7 @@ agent_cli_update_all() {
 
   case "$selected" in
     all)
-      selected="codex,claude,opencode,gemini,qwen,kimi,copilot,pi,cline,amp${AGENT_CLI_ALL_EXTRA:+,$AGENT_CLI_ALL_EXTRA}"
-      selected="${selected//[[:space:]]/}"
+      selected="codex,claude,opencode,gemini,qwen,kimi,copilot,pi,cline,amp,agy"
       ;;
     none)
       selected=""

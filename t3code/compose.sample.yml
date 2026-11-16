@@ -1,3 +1,6 @@
+# Uncomment optional blocks; ${...} reads shell/.env values.
+# Pairing: docker compose exec t3code t3 pair.
+
 services:
   t3code:
     image: ghcr.io/nov12/t3code:latest
@@ -5,36 +8,66 @@ services:
     container_name: t3code
     restart: unless-stopped
 
+    # UID:GID; mounted directories must be writable.
+
     user: "${PUID:-666}:${PGID:-666}"
+
+    # Proxies must forward WebSockets.
 
     ports:
       - "3773:3773"
 
     environment:
-      # Optional tools; for example go@1.26,python@3.13
-      # EXTRA_TOOLS: "go@1.26,python@3.13"
 
-      # Available CLIs: codex,claude,opencode,gemini,qwen,kimi,copilot,pi,cline,amp
-      # all = install all; none or empty string = install none
-      AGENT_CLIS: "codex,claude,opencode,pi,kimi"
+      # Logs: Info = normal, Debug = verbose. Telemetry: true = on, false = off.
 
-      # Update interval in seconds; 0 disables periodic checks
-      # Updates are postponed while the corresponding Agent is running
-      CLI_UPDATE_INTERVAL: "86400"
+      # T3CODE_LOG_LEVEL: "${T3CODE_LOG_LEVEL:-Info}"
+      # T3CODE_TELEMETRY_ENABLED: "${T3CODE_TELEMETRY_ENABLED:-true}"
+
+      # CLIs: codex,claude,opencode,gemini,qwen,kimi,copilot,pi,cline,amp,agy (Antigravity).
+      # Select: comma-separated names or all; none/empty = off; name@version except agy.
+      # Auto-update: 86400 = every 24h; 0 = startup only (seconds).
+      # Mode: skip = reuse/no auto-update; update = auto-update; overwrite = reinstall.
+
+      AGENT_CLIS: "${AGENT_CLIS-codex,claude,opencode,pi,kimi}"
+      CLI_UPDATE_INTERVAL: "${CLI_UPDATE_INTERVAL:-86400}"
+      CLI_INSTALL_MODE: "${CLI_INSTALL_MODE:-update}"
+
+      # Tools: go,dotnet,python,uv,rust,node,bun,deno,java; name@version; none/empty = off.
+      # Python packages: e.g. requests,ruff; Python is enabled automatically.
+      # Mode: skip = reuse; update = check; overwrite = reinstall.
+      # Checks: startup only (seconds); 0 = reuse; overwrite ignores the interval.
+
+      EXTRA_TOOLS: "${EXTRA_TOOLS-}"
+      PYTHON_PACKAGES: "${PYTHON_PACKAGES-}"
+      TOOLS_INSTALL_MODE: "${TOOLS_INSTALL_MODE:-update}"
+      TOOLS_UPDATE_INTERVAL: "${TOOLS_UPDATE_INTERVAL:-86400}"
+
+      # Optional proxy URLs reachable from the container; client support varies.
+
+      # HTTP_PROXY: "${HTTP_PROXY:-}"
+      # HTTPS_PROXY: "${HTTPS_PROXY:-}"
+      # ALL_PROXY: "${ALL_PROXY:-}"
+      # NO_PROXY: "${NO_PROXY:-localhost,127.0.0.1,::1}"
+
+      # Optional provider API keys; CLI login also works.
+
+      # OPENAI_API_KEY: "${OPENAI_API_KEY:-}"
+      # ANTHROPIC_API_KEY: "${ANTHROPIC_API_KEY:-}"
+      # GEMINI_API_KEY: "${GEMINI_API_KEY:-}"
+      # GOOGLE_API_KEY: "${GOOGLE_API_KEY:-}"
+
+    # Home: T3 data, CLI logins and tools. Workspace: projects.
+    # Shared mounts need compatible paths/runtimes; CLI entries are shared.
 
     volumes:
-      # User configuration and Agent authentication
-      # Tools and Python packages persist in this home volume.
       - t3-home:/home/node
+      - ./workspace:/workspace
 
-      # Optional: share individual directories using the same host paths in other containers.
       # - /srv/shared/agent-cli:/home/node/agent-cli
       # - /srv/shared/extra-tools:/home/node/extra-tools
       # - /srv/shared/pythonlib:/home/node/pythonlib
       # - /srv/shared/uvenvs:/home/node/uvenvs
-
-      # Project workspace
-      - ./workspace:/workspace
 
 volumes:
   t3-home:

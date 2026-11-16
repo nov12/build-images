@@ -85,7 +85,6 @@ ENV HOME=/home/node \
     AIONUI_LOG_LEVEL=info \
     AIONUI_STATIC_DIR=/app/out/renderer \
     AIONUI_BACKEND_BIN=/usr/local/bin/aioncore \
-    AGENT_CLI_ALL_EXTRA=agy \
     CLI_UPDATE_INTERVAL=86400
 
 # 构建期检查关键二进制及最终运行产物

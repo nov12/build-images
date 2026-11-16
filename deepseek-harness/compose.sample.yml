@@ -1,6 +1,5 @@
-# Start: docker compose up -d
-# Web login link: docker compose logs deepseek-harness
-# DSH updates with the image: docker compose pull && docker compose up -d
+# Uncomment optional blocks; ${...} reads shell/.env values.
+# Login URL: docker compose logs deepseek-harness.
 
 services:
   deepseek-harness:
@@ -9,53 +8,77 @@ services:
     container_name: deepseek-harness
     restart: unless-stopped
 
-    # Mounts must be writable by these IDs.
+    # UID:GID; mounted directories must be writable.
+
     user: "${PUID:-666}:${PGID:-666}"
 
-    # Internal port stays 3080; change only the host-side port mapping.
+    # Local only; for LAN use "3080:3080" and set DSH_TRUSTED_HOSTS.
+    # Proxies must preserve Host and forward WebSockets.
+
     ports:
-      # Use "3080:3080" for access from other hosts.
       - "127.0.0.1:3080:3080"
 
     environment:
-      # Optional tools; see docs/common.md for all supported settings.
-      # Example: "go,python@3.13"
-      EXTRA_TOOLS: ""
 
-      # Optional Python packages; example: "requests,ruff".
-      PYTHON_PACKAGES: ""
+      # Proxy URL and allowed hosts (comma-separated domain/IP or host:port).
+      # The public URL alone does not grant host trust.
 
-      # Tool installation mode: skip, update, overwrite.
-      TOOLS_INSTALL_MODE: "update"
+      # DSH_PUBLIC_URL: "${DSH_PUBLIC_URL:?Set browser-facing URL}"
+      # DSH_TRUSTED_HOSTS: "${DSH_TRUSTED_HOSTS:?Set allowed host or host:port list}"
 
-      # Update interval in seconds; 0 reuses installed tools.
-      TOOLS_UPDATE_INTERVAL: "86400"
+      # Optional API key; can also be set in the Web UI.
 
-      # Set the API key through the Web UI, or uncomment the mapping below
-      # and set DEEPSEEK_API_KEY in your shell or .env.
-      # DEEPSEEK_API_KEY: "${DEEPSEEK_API_KEY}"
+      # DEEPSEEK_API_KEY: "${DEEPSEEK_API_KEY:-}"
 
-      # HTTPS reverse proxy: preserve Host and forward WebSockets.
-      # DSH_PUBLIC_URL: "https://dsh.example.com/"
-      # DSH_TRUSTED_HOSTS: "dsh.example.com,dsh.lan"
+      # Optional model and search API endpoints.
+
+      # DEEPSEEK_BASE_URL: "${DEEPSEEK_BASE_URL:?Set model API base URL}"
+      # DEEPSEEK_SEARCH_BASE_URL: "${DEEPSEEK_SEARCH_BASE_URL:?Set search API base URL}"
+
+      # Permissions: read-only, workspace-write, danger-full-access.
+      # Telemetry: FEEDBACK_ONLY = feedback only, DISABLED = off.
+
+      # DSH_PERMISSION_MODE: "${DSH_PERMISSION_MODE:-workspace-write}"
+      # DSH_TELEMETRY_MODE: "${DSH_TELEMETRY_MODE:-FEEDBACK_ONLY}"
+
+      # CLIs: codex,claude,opencode,gemini,qwen,kimi,copilot,pi,cline,amp,agy (Antigravity).
+      # Select: comma-separated names or all; none/empty = off; name@version except agy.
+      # Auto-update: 86400 = every 24h; 0 = startup only (seconds).
+      # Mode: skip = reuse/no auto-update; update = auto-update; overwrite = reinstall.
+
+      AGENT_CLIS: "${AGENT_CLIS-none}"
+      CLI_UPDATE_INTERVAL: "${CLI_UPDATE_INTERVAL:-86400}"
+      CLI_INSTALL_MODE: "${CLI_INSTALL_MODE:-update}"
+
+      # Tools: go,dotnet,python,uv,rust,node,bun,deno,java; name@version; none/empty = off.
+      # Python packages: e.g. requests,ruff; Python is enabled automatically.
+      # Mode: skip = reuse; update = check; overwrite = reinstall.
+      # Checks: startup only (seconds); 0 = reuse; overwrite ignores the interval.
+
+      EXTRA_TOOLS: "${EXTRA_TOOLS-}"
+      PYTHON_PACKAGES: "${PYTHON_PACKAGES-}"
+      TOOLS_INSTALL_MODE: "${TOOLS_INSTALL_MODE:-update}"
+      TOOLS_UPDATE_INTERVAL: "${TOOLS_UPDATE_INTERVAL:-86400}"
+
+      # Optional proxy URLs reachable from the container; client support varies.
+
+      # HTTP_PROXY: "${HTTP_PROXY:-}"
+      # HTTPS_PROXY: "${HTTPS_PROXY:-}"
+      # ALL_PROXY: "${ALL_PROXY:-}"
+      # NO_PROXY: "${NO_PROXY:-localhost,127.0.0.1,::1}"
+
+    # Home: DSH settings, sessions, plugins and tools. Workspace: projects.
+    # Shared mounts need compatible paths/runtimes; CLI entries are shared.
+    # Local plugins: dsh plugin --profile web add /plugins/my-plugin.
 
     volumes:
-      # Settings, sessions, plugins and installed tools.
-      # Tools and Python packages persist in this home volume.
       - dsh-home:/home/node
+      - ./workspace:/workspace
 
-      # Optional: share individual directories using the same host paths in other containers.
       # - /srv/shared/agent-cli:/home/node/agent-cli
       # - /srv/shared/extra-tools:/home/node/extra-tools
       # - /srv/shared/pythonlib:/home/node/pythonlib
       # - /srv/shared/uvenvs:/home/node/uvenvs
-
-      # Directory picker starts in the working directory (/workspace).
-      - ./workspace:/workspace
-
-      # Local plugins or Python packages.
-      # Manage plugins in the Web UI, or install a local plugin with:
-      # docker compose exec deepseek-harness dsh plugin --profile web add /plugins/my-plugin
       # - ./plugins:/plugins
 
 volumes:
