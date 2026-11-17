@@ -64,6 +64,26 @@ RUN test -n "$T3_VERSION" \
     && { test -z "$T3_COMMIT" || test "$(git rev-parse HEAD)" = "$T3_COMMIT"; } \
     && npm install --global --engine-strict "$(node -p 'require("./package.json").packageManager')"
 
+# 补齐新版 agy CLI 的自动发现，沿用上游已有的 agy acp 启动逻辑。
+RUN node --input-type=module <<'NODE'
+import assert from 'node:assert/strict';
+import fs from 'node:fs';
+const filename = 'apps/server/src/provider/AntigravityInstallation.ts';
+const source = fs.readFileSync(filename, 'utf8');
+const before = `      for (const candidate of yield* commandCandidates(names.executable, processEnvironment)) {
+        const selected = yield* fromExternal(candidate, "path");
+        if (selected) return selected;
+      }`;
+const after = `      for (const command of [names.executable, "agy"]) {
+        for (const candidate of yield* commandCandidates(command, processEnvironment)) {
+          const selected = yield* fromExternal(candidate, "path");
+          if (selected) return selected;
+        }
+      }`;
+assert.equal(source.split(before).length, 2, 'Unsupported Antigravity discovery code');
+fs.writeFileSync(filename, source.replace(before, after));
+NODE
+
 RUN --mount=type=cache,target=/root/.cache/pnpm \
     pnpm install --frozen-lockfile --ignore-scripts \
         --filter t3... --filter @t3tools/scripts... \
