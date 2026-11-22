@@ -10,7 +10,7 @@ import { test } from 'node:test';
 
 const root = resolve(process.argv[2] || '/opt/dsh');
 const helper = process.argv[3] ? resolve(process.argv[3]) : fileURLToPath(new URL('./web-compat.mjs', import.meta.url));
-const { prepareWebRuntime } = await import(pathToFileURL(helper));
+const { originalRequest, prepareWebRuntime } = await import(pathToFileURL(helper));
 const require = createRequire(join(root, 'package.json'));
 prepareWebRuntime(root);
 const files = ['@deepseek-ai/dsh-host-webserver', '@deepseek-ai/dsh-client-connection'].map(name => require.resolve(name));
@@ -20,6 +20,7 @@ assert.deepEqual(files.map(filename => readFileSync(filename, 'utf8')), installe
 const { Context } = await import(pathToFileURL(require.resolve('@deepseek-ai/cordis')));
 const { WebServer } = await import(pathToFileURL(files[0]));
 const Connection = await import(pathToFileURL(files[1]));
+const nativeAdmission = typeof Connection.ConnectionAuthentication === 'function';
 
 await test('image-owned DSH web compatibility', { timeout: 20000 }, async t => {
   const ctx = new Context();
@@ -59,7 +60,7 @@ await test('image-owned DSH web compatibility', { timeout: 20000 }, async t => {
     res.writeHead(status, { 'content-type': 'application/json' });
     res.end(JSON.stringify(value));
   };
-  const legacy = async (req, res) => {
+  const legacy = async (req, res, peer) => {
     attempts++;
     const local = ['127.0.0.1', '::1', '::ffff:127.0.0.1'].includes(req.socket.remoteAddress);
     const host = new URL(`http://${req.headers.host}`).hostname;
@@ -71,7 +72,12 @@ await test('image-owned DSH web compatibility', { timeout: 20000 }, async t => {
       res.end(body);
       return;
     }
-    assert.equal(connection.requestRejection(req), undefined, 'native authentication still sees the external Host');
+    if (nativeAdmission) {
+      assert.equal(peer?.principal.kind, 'owner', 'legacy handlers retain the admitted Peer');
+      assert.equal(connection.admit(originalRequest(req)).peer, peer);
+    } else {
+      assert.equal(connection.requestRejection(req), undefined, 'native authentication still sees the external Host');
+    }
     assert.ok(req.rawHeaders.includes(req.headers.host), 'raw and parsed compatibility headers agree');
     assert.deepEqual(req.headersDistinct.host, [req.headers.host]);
     if (req.method === 'POST') {
@@ -85,14 +91,18 @@ await test('image-owned DSH web compatibility', { timeout: 20000 }, async t => {
   web.register({ kind: 'exact', path: '/api/legacy', handler: legacy });
 
   try {
-    await t.test('incomplete patches stop preparation before changing another package', () => {
-      const source = readFileSync(files[1], 'utf8');
+    await t.test('incomplete patches fail validation', () => {
+      const filename = nativeAdmission ? files[0] : files[1];
+      const integration = nativeAdmission
+        ? 'await handleRoute(req, res, responder, admission.peer);'
+        : 'request = originalRequest(request);';
+      const source = readFileSync(filename, 'utf8');
       const timestamp = statSync(files[0], { bigint: true }).mtimeNs;
       try {
-        writeFileSync(files[1], source.replace('request = originalRequest(request);', '/* missing integration */'));
+        writeFileSync(filename, source.replace(integration, '/* missing integration */'));
         assert.throws(() => prepareWebRuntime(root), /Incomplete DSH web compatibility patch/);
-        assert.equal(statSync(files[0], { bigint: true }).mtimeNs, timestamp);
-      } finally { writeFileSync(files[1], source); }
+        if (!nativeAdmission) assert.equal(statSync(files[0], { bigint: true }).mtimeNs, timestamp);
+      } finally { writeFileSync(filename, source); }
     });
     await t.test('missing authentication service fails closed', async () => {
       assert.equal((await send('/api/legacy')).status, 503);
@@ -101,11 +111,27 @@ await test('image-owned DSH web compatibility', { timeout: 20000 }, async t => {
     const connectionFiber = ctx.plugin(Connection, { trustedHosts: ['dsh.example', 'second.example'] });
     await connectionFiber.await();
     connection = ctx.get('connection');
-    web.registerFallback((req, res) => {
-      if (req.url === '/asset.js') { res.end('public static asset'); return; }
-      if (connection.authorizeIndex(req, res)) res.end('native authenticated index');
-    });
-    const loginUrl = new URL(connection.authenticatedUrl('https://dsh.example/'));
+    const browserUrl = 'https://dsh.example/';
+    let loginUrl;
+    if (nativeAdmission) {
+      const TokenAuth = await import(pathToFileURL(require.resolve('@deepseek-ai/dsh-host-authentication-token')));
+      await ctx.plugin(TokenAuth, { cookieMaxAgeDays: 30 }).await();
+      web.registerFallback({
+        auth: req => req.url.pathname === '/asset.js' ? 'anonymous' : 'required',
+        handler(req, res) {
+          res.end(req.url === '/asset.js' ? 'public static asset' : 'native authenticated index');
+        },
+      });
+      const entries = [];
+      ctx.emit('webserver/entry-url', browserUrl, entries);
+      loginUrl = new URL(entries[0].url);
+    } else {
+      web.registerFallback((req, res) => {
+        if (req.url === '/asset.js') { res.end('public static asset'); return; }
+        if (connection.authorizeIndex(req, res)) res.end('native authenticated index');
+      });
+      loginUrl = new URL(connection.authenticatedUrl(browserUrl));
+    }
     await t.test('anonymous requests and query tokens cannot reach raw plugin routes', async () => {
       assert.equal((await send('/api/legacy')).status, 401);
       assert.equal((await send(`/api/legacy${loginUrl.search}`)).status, 401);
@@ -128,6 +154,14 @@ await test('image-owned DSH web compatibility', { timeout: 20000 }, async t => {
       assert.equal(response.headers['x-early-refusal'], undefined);
       assert.equal(attempts, 2);
     });
+    if (nativeAdmission) {
+      await t.test('an explicit route auth policy preserves its loopback restriction', async () => {
+        const before = attempts;
+        web.register({ kind: 'exact', path: '/api/explicit-auth', auth: 'required', handler: legacy });
+        assert.equal((await send('/api/explicit-auth', { headers: { cookie } })).status, 403);
+        assert.equal(attempts, before + 1);
+      });
+    }
     await t.test('POST bytes reach the operation once after its early refusal', async () => {
       const body = JSON.stringify({ value: 'one operation' });
       const response = await send('/api/legacy', { method: 'POST', headers: {
@@ -270,9 +304,10 @@ await test('image-owned DSH web compatibility', { timeout: 20000 }, async t => {
       const apiCookie = connected.headers['set-cookie'][0].split(';', 1)[0];
       assert.equal((await send('/api', { headers: { cookie: apiCookie } })).status, 404);
     });
-    web.registerUpgrade({ path: '/api/socket', handler(req, socket) {
+    web.registerUpgrade({ path: '/api/socket', handler(req, socket, _head, peer) {
       assert.equal(req.headers.host, 'dsh.example');
-      assert.equal(connection.requestRejection(req), undefined);
+      if (nativeAdmission) assert.equal(peer?.principal.kind, 'owner');
+      else assert.equal(connection.requestRejection(req), undefined);
       socket.write('HTTP/1.1 101 Switching Protocols\r\nConnection: Upgrade\r\nUpgrade: websocket\r\n\r\n');
     } });
     const upgrade = headers => new Promise((resolve, reject) => {

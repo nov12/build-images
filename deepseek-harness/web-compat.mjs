@@ -81,8 +81,8 @@ function loopbackRefusal(body) {
 }
 
 /** A loopback-only refusal must precede side effects; do not replay other denials. */
-export async function handleRoute(request, response, route) {
-  if (route[nativeRoute]) return route.handler(request, response);
+export async function handleRoute(request, response, route, ...args) {
+  if (route[nativeRoute]) return route.handler(request, response, ...args);
   const initialHeaders = response.getHeaders();
   const initialStatus = response.statusCode;
   const initialMessage = response.statusMessage;
@@ -143,7 +143,7 @@ export async function handleRoute(request, response, route) {
     },
   });
   try {
-    await route.handler(request, probe);
+    await route.handler(request, probe, ...args);
     // node:http also permits handlers that reply later without returning a Promise.
     if (!refusedEnd && !response.writableEnded && !response.destroyed) {
       await new Promise(resolve => {
@@ -170,16 +170,27 @@ export async function handleRoute(request, response, route) {
   for (const [name, value] of Object.entries(initialHeaders)) response.setHeader(name, value);
   response.statusCode = initialStatus;
   response.statusMessage = initialMessage;
-  await route.handler(localRequest(request), response);
+  await route.handler(localRequest(request), response, ...args);
 }
 
 /** Patch the image-owned host once; mounted plugins are never changed. */
 export function prepareWebRuntime(root) {
   const require = createRequire(join(resolve(root), 'package.json'));
   const helper = pathToFileURL(fileURLToPath(import.meta.url)).href;
+  const webserver = '@deepseek-ai/dsh-host-webserver';
+  const connection = '@deepseek-ai/dsh-client-connection';
+  const connectionSource = readFileSync(require.resolve(connection), 'utf8');
+  const nativeAdmission = connectionSource.includes('ctx.on("webserver/authorize", (request, policy) =>');
   // The native fallback keeps ownership of index login and public static assets.
-  const patches = [
-    ['@deepseek-ai/dsh-host-webserver', 'authorizeRoute, authorizeUpgrade, handleRoute', [
+  const patches = nativeAdmission ? [
+    [webserver, 'handleRoute', [[
+      '\t\t\t\telse await responder.handler(req, res, admission.peer);',
+      // Legacy handlers have no explicit auth policy. Let only an admitted owner
+      // retry those named routes, and keep the same Peer for both invocations.
+      '\t\t\t\telse if (responder !== this.fallback && responder.auth === undefined && admission.peer?.principal.kind === "owner") await handleRoute(req, res, responder, admission.peer);\n\t\t\t\telse await responder.handler(req, res, admission.peer);',
+    ]]],
+  ] : [
+    [webserver, 'authorizeRoute, authorizeUpgrade, handleRoute', [
       [
         '\t\t\tif (typeof responder === "function") await responder(req, res);',
         '\t\t\tif (responder !== this.fallback && !authorizeRoute(this.ctx, req, res, responder)) return;\n\t\t\tif (typeof responder === "function") await responder(req, res);',
@@ -193,7 +204,7 @@ export function prepareWebRuntime(root) {
         '\t\t\t\tif (!authorizeUpgrade(this.ctx, req, socket)) return;\n\t\t\t\tthis.upgradedSockets.add(socket);',
       ],
     ]],
-    ['@deepseek-ai/dsh-client-connection', 'originalRequest, nativeRoute', [
+    [connection, 'originalRequest, nativeRoute', [
       [
         '\tadmit(request) {\n\t\tif (!this.isTrusted(request))',
         '\tadmit(request) {\n\t\trequest = originalRequest(request);\n\t\tif (!this.isTrusted(request))',
