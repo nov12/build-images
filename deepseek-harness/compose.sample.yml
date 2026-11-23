@@ -20,6 +20,9 @@ services:
 
     environment:
 
+      # Fixed Web login token; empty = random on startup. Generate with openssl rand -hex 32.
+      DSH_TOKEN: "${DSH_TOKEN:-}"
+
       # Proxy URL and allowed hosts (comma-separated domain/IP or host:port).
       # The public URL alone does not grant host trust.
 

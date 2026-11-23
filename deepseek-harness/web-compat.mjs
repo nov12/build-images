@@ -181,6 +181,10 @@ export function prepareWebRuntime(root) {
   const connection = '@deepseek-ai/dsh-client-connection';
   const connectionSource = readFileSync(require.resolve(connection), 'utf8');
   const nativeAdmission = connectionSource.includes('ctx.on("webserver/authorize", (request, policy) =>');
+  const launchToken = [
+    'const created = encodeBase64Url(randomBytes(SECRET_BYTES));',
+    'const created = process.env.DSH_TOKEN || encodeBase64Url(randomBytes(SECRET_BYTES));',
+  ];
   // The native fallback keeps ownership of index login and public static assets.
   const patches = nativeAdmission ? [
     [webserver, 'handleRoute', [[
@@ -189,6 +193,7 @@ export function prepareWebRuntime(root) {
       // retry those named routes, and keep the same Peer for both invocations.
       '\t\t\t\telse if (responder !== this.fallback && responder.auth === undefined && admission.peer?.principal.kind === "owner") await handleRoute(req, res, responder, admission.peer);\n\t\t\t\telse await responder.handler(req, res, admission.peer);',
     ]]],
+    ['@deepseek-ai/dsh-host-authentication-token', '', [launchToken]],
   ] : [
     [webserver, 'authorizeRoute, authorizeUpgrade, handleRoute', [
       [
@@ -205,6 +210,7 @@ export function prepareWebRuntime(root) {
       ],
     ]],
     [connection, 'originalRequest, nativeRoute', [
+      launchToken,
       [
         '\tadmit(request) {\n\t\tif (!this.isTrusted(request))',
         '\tadmit(request) {\n\t\trequest = originalRequest(request);\n\t\tif (!this.isTrusted(request))',
@@ -219,11 +225,11 @@ export function prepareWebRuntime(root) {
       ],
     ]],
   ];
-  // Validate every integration point before changing either package.
+  // Validate every integration point before changing any installed package.
   const outputs = patches.map(([name, imports, replacements]) => {
     const filename = require.resolve(name);
     let source = readFileSync(filename, 'utf8');
-    const preamble = `import { ${imports} } from ${JSON.stringify(helper)};\n`;
+    const preamble = imports ? `import { ${imports} } from ${JSON.stringify(helper)};\n` : '// DSH container launch token\n';
     if (source.startsWith(preamble)) {
       for (const [, after] of replacements) {
         if (source.split(after).length !== 2) throw new Error(`Incomplete DSH web compatibility patch: ${filename}`);
