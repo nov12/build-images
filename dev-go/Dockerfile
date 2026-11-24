@@ -22,7 +22,8 @@ FROM node:${NODE_VERSION}-trixie-slim AS runtime-system
 ARG TARGETARCH
 ARG TASK_VERSION
 
-ENV GOPATH=/go \
+ENV LANG=C.UTF-8 \
+    GOPATH=/go \
     GOTOOLCHAIN=local \
     PYTHONDONTWRITEBYTECODE=1 \
     PIP_DISABLE_PIP_VERSION_CHECK=1 \
@@ -35,13 +36,14 @@ ENV PATH="/tmp/extra-tools/bin:/usr/local/go/bin:/go/bin:${PATH}"
 COPY --from=go-sdk /usr/local/go /usr/local/go
 COPY --from=python-runtime /usr/local/ /usr/local/
 
-# 安装 Python 动态库、SSH 和 Agent CLI 所需工具
+# 安装 Python 动态库、SSH 和 Agent 核心工具
 RUN set -eux; \
     apt-get update; \
     DEBIAN_FRONTEND=noninteractive apt-get upgrade -y --no-install-recommends; \
     DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends \
         ca-certificates \
         curl \
+        gh \
         git \
         jq \
         libatomic1 \
@@ -61,8 +63,12 @@ RUN set -eux; \
         libuuid1 \
         libzstd1 \
         netbase \
+        openssh-client \
         openssh-server \
+        procps \
         ripgrep \
+        rsync \
+        sshpass \
         sudo \
         tini \
         tzdata \
@@ -113,6 +119,10 @@ RUN set -eux; \
     npm --version; \
     task --version; \
     git --version; \
+    gh --version | head -n 1; \
+    ssh -V; \
+    sshpass -V; \
+    rsync --version | head -n 1; \
     rm -f /etc/ssh/ssh_host_*
 
 # 使用仓库根目录作为构建上下文，复用已有 Agent CLI 管理入口

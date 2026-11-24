@@ -105,7 +105,7 @@ ARG T3_VERSION
 ARG USER_UID=666
 ARG USER_GID=666
 
-# 只安装运行所需工具
+# 只安装运行和 Agent 远程/协作核心工具
 RUN apt-get update \
     && DEBIAN_FRONTEND=noninteractive apt-get upgrade -y --no-install-recommends \
     && apt-get install -y --no-install-recommends \
@@ -114,9 +114,10 @@ RUN apt-get update \
         coreutils \
         curl \
         findutils \
+        gh \
         git \
-        jq \
         gzip \
+        jq \
         libatomic1 \
         libicu76 \
         libnss-wrapper \
@@ -124,6 +125,8 @@ RUN apt-get update \
         openssh-client \
         procps \
         ripgrep \
+        rsync \
+        sshpass \
         tar \
         tini \
         unzip \
@@ -155,9 +158,14 @@ exec /usr/local/bin/node "$script_dir/bin.mjs" "$@"
 SH
 
 RUN /opt/t3/t3 --help >/dev/null \
-    && test "$(/opt/t3/t3 --version)" = "t3 v${T3_VERSION}"
+    && test "$(/opt/t3/t3 --version)" = "t3 v${T3_VERSION}" \
+    && gh --version >/dev/null \
+    && ssh -V >/dev/null 2>&1 \
+    && sshpass -V >/dev/null \
+    && rsync --version >/dev/null
 
-ENV HOME=/home/node \
+ENV LANG=C.UTF-8 \
+    HOME=/home/node \
     PATH="/opt/t3:/home/node/agent-cli/bin:/tmp/extra-tools/bin:/home/node/pythonlib/bin:/home/node/.local/bin:${PATH}" \
     T3CODE_NO_BROWSER=1 \
     CLI_UPDATE_INTERVAL=86400
