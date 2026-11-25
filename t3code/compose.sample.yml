@@ -19,10 +19,10 @@ services:
 
     environment:
 
-      # Logs: Info = normal, Debug = verbose. Telemetry: true = on, false = off.
+      # The image removes T3 product analytics and T3 Connect trace export at build time.
+      # Logs: Info = normal, Debug = verbose.
 
       # T3CODE_LOG_LEVEL: "${T3CODE_LOG_LEVEL:-Info}"
-      # T3CODE_TELEMETRY_ENABLED: "${T3CODE_TELEMETRY_ENABLED:-true}"
 
       # CLIs: codex,claude,opencode,gemini,qwen,kimi,copilot,pi,cline,amp,agy (Antigravity).
       # Select: comma-separated names or all; none/empty = off; name@version except agy.

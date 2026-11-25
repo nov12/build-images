@@ -2,7 +2,7 @@
 
 ARG NODE_VERSION=lts
 
-# 保留同版本官方前端和原生组件，不携带其中的 Node 运行时。
+# 从校验过的同版本官方发布包提取原生运行依赖。
 FROM --platform=$BUILDPLATFORM alpine:3 AS t3-assets
 
 RUN apk add --no-cache \
@@ -36,15 +36,16 @@ RUN set -eux; \
     test -n "$EXPECTED"; \
     printf '%s  %s\n' "$EXPECTED" "$ASSET" | sha256sum -c -; \
     \
-    tar -xzf "$ASSET" -C /opt/t3 --strip-components=1; \
-    test -x /opt/t3/t3; \
-    rm /opt/t3/t3; \
+    ROOT="${ASSET%.tar.gz}"; \
+    tar -xzf "$ASSET" -C /opt/t3 --strip-components=1 --exclude="$ROOT/t3" --exclude="$ROOT/client"; \
+    rm -rf /opt/t3/t3 /opt/t3/client; \
+    test -d /opt/t3/node_modules; \
     rm -rf /opt/t3/node_modules/@ff-labs/fff-bin-linux-*-musl \
         /opt/t3/node_modules/node-pty/src \
         /opt/t3/node_modules/node-pty/third_party
 
-# 服务端使用上游普通 JS 构建模式，与最终镜像共用 Node。
-FROM --platform=$BUILDPLATFORM node:${NODE_VERSION}-trixie-slim AS t3-server-builder
+# 在源码中移除产品遥测，再构建配套的服务端和网页。
+FROM --platform=$BUILDPLATFORM node:${NODE_VERSION}-trixie-slim AS t3-builder
 
 RUN apt-get update \
     && apt-get install -y --no-install-recommends ca-certificates git \
@@ -62,41 +63,55 @@ RUN test -n "$T3_VERSION" \
     && git fetch --depth=1 --filter=blob:none origin "${T3_COMMIT:-refs/tags/v${T3_VERSION}}" \
     && git checkout --detach FETCH_HEAD \
     && { test -z "$T3_COMMIT" || test "$(git rev-parse HEAD)" = "$T3_COMMIT"; } \
-    && npm install --global --engine-strict "$(node -p 'require("./package.json").packageManager')"
+    && npm install --global --engine-strict "$(node -p 'require("./package.json").packageManager')" typescript@6.0.3
 
 # 仅在旧版发现逻辑仍存在时补齐 agy CLI 的自动发现。
 RUN node --input-type=module <<'NODE'
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
 const filename = 'apps/server/src/provider/AntigravityInstallation.ts';
-const source = fs.readFileSync(filename, 'utf8');
-const before = `      for (const candidate of yield* commandCandidates(names.executable, processEnvironment)) {
+if (fs.existsSync(filename)) {
+  const source = fs.readFileSync(filename, 'utf8');
+  const before = `      for (const candidate of yield* commandCandidates(names.executable, processEnvironment)) {
         const selected = yield* fromExternal(candidate, "path");
         if (selected) return selected;
       }`;
-const after = `      for (const command of [names.executable, "agy"]) {
+  const after = `      for (const command of [names.executable, "agy"]) {
         for (const candidate of yield* commandCandidates(command, processEnvironment)) {
           const selected = yield* fromExternal(candidate, "path");
           if (selected) return selected;
         }
       }`;
-if (source.includes(before)) {
-  assert.equal(source.split(before).length, 2, 'Ambiguous Antigravity discovery code');
-  fs.writeFileSync(filename, source.replace(before, after));
+  if (source.includes(before)) {
+    assert.equal(source.split(before).length, 2, 'Ambiguous Antigravity discovery code');
+    fs.writeFileSync(filename, source.replace(before, after));
+  }
 }
 NODE
 
 RUN --mount=type=cache,target=/root/.cache/pnpm \
     pnpm install --frozen-lockfile --ignore-scripts \
-        --filter t3... --filter @t3tools/scripts... \
-        --store-dir /root/.cache/pnpm/store \
+        --filter t3... --filter @t3tools/web... --filter @t3tools/scripts... \
+        --store-dir /root/.cache/pnpm/store
+
+COPY t3code/remove-telemetry.cjs /usr/local/lib/t3-build/remove-telemetry.cjs
+RUN node /usr/local/lib/t3-build/remove-telemetry.cjs \
     && node scripts/update-release-package-versions.ts "$T3_VERSION" \
-    && cp .env.example .env \
-    && pnpm --filter t3 run build:bundle \
+    && if [ -f .env.example ]; then awk '!/^[[:space:]]*[^#]*OTLP_TRACES_/' .env.example > .env; fi \
+    && pnpm --config.verify-deps-before-run=false --filter t3 run build:bundle \
     && test -s apps/server/dist/bin.mjs \
     && test -s apps/server/dist/claude-history-worker.mjs \
-    && mkdir -p /out \
-    && cp -a apps/server/dist/. /out/
+    && T3CODE_WEB_SOURCEMAP=false pnpm --config.verify-deps-before-run=false --filter @t3tools/web run build \
+    && if [ -f scripts/apply-web-brand-assets.ts ]; then node scripts/apply-web-brand-assets.ts production apps/web/dist; fi \
+    && test -s apps/web/dist/index.html \
+    && mv apps/server/dist /out \
+    && mv apps/web/dist /out/client
+
+# 上游更新若重新引入已知发送器或设备标识，就阻止出镜像。
+RUN if grep -rEl --include='*.mjs' --include='*.js' --include='*.map' \
+        'ingest\.t3\.codes|us\.i\.posthog\.com|eu\.i\.posthog\.com|T3CODE_POSTHOG_|phc_[A-Za-z0-9]{20,}|AnalyticsService\.sendBatch|X-Axiom-Dataset|api\.axiom\.co|t3-code-relay-traces-|t3code:analytics-device-id' /out; then \
+        exit 1; \
+    else test "$?" -eq 1; fi
 
 # 运行环境
 FROM node:${NODE_VERSION}-trixie-slim AS runtime-system
@@ -149,8 +164,7 @@ RUN set -eux; \
 
 COPY --from=t3-assets /opt/t3/ /opt/t3/
 COPY --from=t3-assets /tmp/download/SHA256SUMS /usr/local/share/build-images/t3-SHA256SUMS
-COPY --from=t3-server-builder /out/ /opt/t3/
-COPY t3code/check-runtime.mjs /usr/local/lib/t3code/check-runtime.mjs
+COPY --from=t3-builder /out/ /opt/t3/
 COPY --chmod=755 <<'SH' /opt/t3/t3
 #!/bin/sh
 script_dir="$(dirname -- "$(readlink -f -- "$0")")"

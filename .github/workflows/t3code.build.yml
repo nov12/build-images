@@ -31,6 +31,47 @@ concurrency:
   cancel-in-progress: false
 
 jobs:
+  telemetry-compat:
+    runs-on: ubuntu-26.04
+    timeout-minutes: 10
+    permissions:
+      contents: read
+    strategy:
+      matrix:
+        revision:
+          - 6c8fed35dded9ff71c5b46807125457acbb76be6 # v0.0.45: direct PostHog, old relay factory
+          - 24e77473ecf41bc1f7142529c7911c1c1aae1d76 # v0.1.9: owner IDs, void record
+          - ca81b7b97a1c4b91e5ac25768d0f6629f37732fd # v0.1.12: boolean record
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+      - name: Checkout historical upstream sources
+        env:
+          REVISION: ${{ matrix.revision }}
+        run: |
+          mkdir -p upstream
+          cd upstream
+          git init -q .
+          git remote add origin https://github.com/pingdotgg/t3code.git
+          git sparse-checkout set --cone apps/server/src apps/web/src packages/shared/src packages/client-runtime/src
+          git fetch --depth=1 --filter=blob:none origin "$REVISION"
+          git checkout --detach FETCH_HEAD
+      - name: Apply privacy changes to historical sources
+        working-directory: upstream
+        run: |
+          npm install --prefix "$RUNNER_TEMP/parser" --ignore-scripts --no-package-lock typescript@6.0.3
+          export NODE_PATH="$RUNNER_TEMP/parser/node_modules"
+          node ../t3code/remove-telemetry.cjs
+          git diff > "$RUNNER_TEMP/first.diff"
+          node ../t3code/remove-telemetry.cjs
+          git diff | diff -u "$RUNNER_TEMP/first.diff" -
+          git diff --check
+          if grep -nE 'T3CODE_POSTHOG_|HttpClientRequest\.post|phc_[A-Za-z0-9]{20,}|ingest\.t3\.codes|us\.i\.posthog\.com' apps/server/src/telemetry/AnalyticsService.ts ||
+             grep -n 'X-Axiom-Dataset' packages/shared/src/relayTracing.ts ||
+             grep -n 't3code:analytics-device-id' apps/web/src/connection/platform.ts; then exit 1; fi
+          if grep -rnE --include='*.tsx' --exclude='*.test.*' --exclude='*.spec.*' --exclude='*.stories.*' '<ClerkProvider' apps/web/src | grep -v 'telemetry={false}'; then exit 1; fi
+
   resolve:
     runs-on: ubuntu-26.04
     timeout-minutes: 10
@@ -56,7 +97,7 @@ jobs:
       - name: Check startup script syntax
         run: |
           find common -type f -name '*.sh' -print0 | xargs -0 -r -n 1 bash -n
-          node --check t3code/check-runtime.mjs
+          node --check t3code/remove-telemetry.cjs
           docker compose -f t3code/compose.sample.yml config --quiet
       - name: Resolve version
         id: resolve
@@ -77,7 +118,8 @@ jobs:
             {
               printf '%s\n' "$version" "$commit" "$NODE_VERSION"
               find common -type f -print0 | LC_ALL=C sort -z | xargs -0 sha256sum
-              sha256sum .github/scripts/resolve-toolchains.sh .github/scripts/resolve-release.py t3code/Dockerfile t3code/check-runtime.mjs \
+              sha256sum .github/scripts/resolve-toolchains.sh .github/scripts/resolve-release.py t3code/Dockerfile \
+                t3code/remove-telemetry.cjs \
                 .github/workflows/t3code.build.yml .github/workflows/docker-release.yml
             } | sha256sum | cut -d ' ' -f1
           )"
@@ -89,7 +131,7 @@ jobs:
           } >> "$GITHUB_OUTPUT"
 
   release:
-    needs: resolve
+    needs: [resolve, telemetry-compat]
     if: needs.resolve.outputs.build == 'true'
     uses: ./.github/workflows/docker-release.yml
     with:
@@ -102,15 +144,28 @@ jobs:
       check-command: |
         find /usr/local/lib/container-common -type f -name '*.sh' -print0 | xargs -0 -r -n 1 bash -n
         AGENT_CLIS=none CLI_UPDATE_INTERVAL=0 /usr/local/lib/container-common/entrypoint.sh t3 --help >/dev/null
-        T3_EXPECTED_VERSION=${{ needs.resolve.outputs.version }} node /usr/local/lib/t3code/check-runtime.mjs
+        expected="${{ needs.resolve.outputs.version }}"
+        test "$(t3 --version)" = "t3 v${expected#t3-}"
+        node -e 'require(require.resolve("node-pty", { paths: ["/opt/t3"] }))'
       check-startup: true
       startup-command: |
         docker run -d --network none \
           -e AGENT_CLIS=none -e EXTRA_TOOLS=none -e PYTHON_PACKAGES=none \
-          -e CLI_UPDATE_INTERVAL=0 -e T3CODE_TELEMETRY_DISABLED=1 \
+          -e CLI_UPDATE_INTERVAL=0 \
+          -e T3CODE_TELEMETRY_ENABLED=true -e DO_NOT_TRACK=0 \
           "$CHECK_IMAGE" t3 serve --host 127.0.0.1 --port 3773
       startup-check-command: |
-        docker exec "$CHECK_CONTAINER" node /usr/local/lib/t3code/check-runtime.mjs --http
+        docker exec "$CHECK_CONTAINER" /usr/local/bin/node --input-type=module -e '
+          const origin = "http://127.0.0.1:3773";
+          const res = await fetch(origin, { signal: AbortSignal.timeout(5000) });
+          if (!res.ok) throw new Error(`HTTP ${res.status}`);
+          const html = await res.text();
+          const match = html.match(/src="([^" ]+\.js)"/);
+          if (!/<html/i.test(html) || !match) throw new Error("Missing Web UI");
+          const asset = await fetch(new URL(match[1], origin), { signal: AbortSignal.timeout(5000) });
+          if (!asset.ok || (await asset.text()).length === 0) throw new Error("Missing Web JS asset");
+        '
+        docker exec "$CHECK_CONTAINER" sh -ec 'test -z "$(find "$HOME" -name anonymous-id 2>/dev/null)"'
       upstream-revision: ${{ needs.resolve.outputs.upstream_commit }}
       upstream-repository: pingdotgg/t3code
       upstream-version-prefix: t3-
