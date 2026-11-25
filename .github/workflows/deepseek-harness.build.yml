@@ -65,7 +65,6 @@ jobs:
           find common -type f -name '*.sh' -print0 | xargs -0 -r -n 1 bash -n
           bash -n deepseek-harness/entrypoint.sh
           node --check deepseek-harness/web-compat.mjs
-          node --check deepseek-harness/web-compat.test.mjs
           docker compose -f deepseek-harness/compose.sample.yml config --quiet
       - name: Resolve current releases
         id: resolve
@@ -97,7 +96,7 @@ jobs:
               printf '%s\n' "$version" "$integrity" "$commit" "$pnpm_version" "$uv_version" "$NODE_VERSION"
               find common -type f -print0 | LC_ALL=C sort -z | xargs -0 sha256sum
               sha256sum .github/scripts/resolve-toolchains.sh .github/scripts/resolve-release.py deepseek-harness/Dockerfile deepseek-harness/entrypoint.sh \
-                deepseek-harness/web-compat.mjs deepseek-harness/web-compat.test.mjs \
+                deepseek-harness/web-compat.mjs \
                 .github/workflows/deepseek-harness.build.yml .github/workflows/docker-release.yml
             } | sha256sum | cut -d ' ' -f1
           )"

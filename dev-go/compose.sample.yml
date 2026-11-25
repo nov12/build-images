@@ -1,6 +1,4 @@
-# Uncomment optional blocks; ${...} reads shell/.env values.
-# SSH starts as root; new login users use UID:GID 666:666.
-# Set CLI credentials and shell proxies in the login user's shell.
+# SSH starts as root; default login user UID:GID is 666:666.
 
 services:
   dev-go:
@@ -9,64 +7,70 @@ services:
     container_name: dev-go
     restart: unless-stopped
 
-    # Host SSH port; container port stays 22.
-
+    # Host SSH port; container port is 22.
     ports:
       - "${SSH_PORT:-2222}:22"
 
     environment:
-
-      # SSH login name and timezone.
-
+      # SSH login username.
       USER_NAME: "${USER_NAME:-apple}"
+
+      # Timezone.
       TZ: "${TZ:-Asia/Singapore}"
 
-      # SSH auth: set PUBLIC_KEY, or PASSWORD_ACCESS=true with USER_PASSWORD.
-      # A nonempty PUBLIC_KEY replaces authorized_keys.
-
+      # SSH public key; nonempty replaces authorized_keys.
       PUBLIC_KEY: "${PUBLIC_KEY:-}"
+
+      # SSH password login: true | false
       PASSWORD_ACCESS: "${PASSWORD_ACCESS:-false}"
+
+      # Password when PASSWORD_ACCESS=true.
       USER_PASSWORD: "${USER_PASSWORD:-}"
 
-      # Sudo: true = passwordless sudo, false = disabled.
-
+      # Passwordless sudo: true | false
       SUDO_ACCESS: "${SUDO_ACCESS:-false}"
 
-      # CLIs: codex,claude,opencode,gemini,qwen,kimi,copilot,pi,cline,amp,agy (Antigravity).
-      # Select: comma-separated names or all; none/empty = off; name@version except agy.
-      # Auto-update: 86400 = every 24h; 0 = startup only (seconds).
-      # Mode: skip = reuse/no auto-update; update = auto-update; overwrite = reinstall.
-
+      # codex,claude,opencode,gemini,qwen,kimi,copilot,pi,cline,amp,agy | all | none (name@version except agy)
       AGENT_CLIS: "${AGENT_CLIS-codex,claude,opencode}"
+
+      # Update interval in seconds; 0 = startup only.
       CLI_UPDATE_INTERVAL: "${CLI_UPDATE_INTERVAL:-86400}"
+
+      # skip | update | overwrite
       CLI_INSTALL_MODE: "${CLI_INSTALL_MODE:-update}"
 
-      # Tools: go,dotnet,python,uv,rust,node,bun,deno,java; name@version; none/empty = off.
-      # Python packages: e.g. requests,ruff; Python is enabled automatically.
-      # Mode: skip = reuse; update = check; overwrite = reinstall.
-      # Checks: startup only (seconds); 0 = reuse; overwrite ignores the interval.
-
+      # go,dotnet,python,uv,rust,node,bun,deno,java | none (supports name@version)
       EXTRA_TOOLS: "${EXTRA_TOOLS-}"
+
+      # Comma-separated Python packages, e.g. requests,ruff (auto-enables python).
       PYTHON_PACKAGES: "${PYTHON_PACKAGES-}"
+
+      # skip | update | overwrite
       TOOLS_INSTALL_MODE: "${TOOLS_INSTALL_MODE:-update}"
+
+      # Startup check interval in seconds; 0 = reuse.
       TOOLS_UPDATE_INTERVAL: "${TOOLS_UPDATE_INTERVAL:-86400}"
 
-      # Startup installer proxies; set SSH shell proxies separately.
-
+      # Startup installer proxy URLs.
       # HTTP_PROXY: "${HTTP_PROXY:-}"
       # HTTPS_PROXY: "${HTTPS_PROXY:-}"
       # ALL_PROXY: "${ALL_PROXY:-}"
       # NO_PROXY: "${NO_PROXY:-localhost,127.0.0.1,::1}"
 
-    # Volumes: SSH keys, login home, projects and Go binaries/module cache.
-    # Shared mounts need compatible paths/runtimes; CLI entries are shared.
-
     volumes:
+      # SSH host keys.
       - dev-go-config:/config
+
+      # Login user home, CLI logins, and tools.
       - dev-go-home:/home/${USER_NAME:-apple}
+
+      # Project workspace.
       - ./workspace:/workspace
+
+      # Go binaries and module cache.
       - go-data:/go
 
+      # Shared CLI/tool mounts across containers.
       # - /srv/shared/agent-cli:/home/${USER_NAME:-apple}/agent-cli
       # - /srv/shared/extra-tools:/home/${USER_NAME:-apple}/extra-tools
       # - /srv/shared/pythonlib:/home/${USER_NAME:-apple}/pythonlib

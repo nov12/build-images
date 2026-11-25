@@ -1,6 +1,4 @@
-# Uncomment optional blocks; ${...} reads shell/.env values.
-# Private deployment: embedded PostgreSQL by default.
-# App settings: /paperclip/instances/default/config.json.
+# Private deployment (embedded PostgreSQL). App settings: /paperclip/instances/default/config.json
 
 services:
   paperclip:
@@ -9,114 +7,112 @@ services:
     container_name: paperclip
     restart: unless-stopped
 
-    # UID:GID; mounted directories must be writable.
-
+    # UID:GID; mounts must be writable.
     user: "${PUID:-666}:${PGID:-666}"
 
-    # Agent process limit and shutdown grace period.
-
+    # Process limit and shutdown grace period.
     pids_limit: 2048
     stop_grace_period: 90s
 
-    # Host binding; container port stays 3100.
-
+    # Host binding; container port is 3100.
     ports:
       - "${PAPERCLIP_BIND_IP:-0.0.0.0}:${PAPERCLIP_PORT:-3100}:3100"
 
     environment:
-
-      # Login required; exposure: private = LAN/VPN, public = internet.
-
+      # authenticated | local_trusted
       PAPERCLIP_DEPLOYMENT_MODE: "authenticated"
+
+      # private | public
       PAPERCLIP_DEPLOYMENT_EXPOSURE: "private"
 
-      # Browser URL: use your LAN IP/domain for remote access.
-
+      # Browser-facing URL.
       PAPERCLIP_PUBLIC_URL: "${PAPERCLIP_PUBLIC_URL:-http://localhost:${PAPERCLIP_PORT:-3100}}"
 
-      # Extra hostnames, comma-separated; the URL hostname is already allowed.
-
+      # Extra allowed hostnames (comma-separated); URL hostname is already allowed.
       PAPERCLIP_ALLOWED_HOSTNAMES: "${PAPERCLIP_ALLOWED_HOSTNAMES:-}"
 
-      # Required secrets: run openssl rand -hex 32 separately for each; keep stable.
-
+      # Required secrets (generate separately with openssl rand -hex 32; keep stable).
       BETTER_AUTH_SECRET: "${BETTER_AUTH_SECRET:?Set BETTER_AUTH_SECRET in shell or .env}"
       PAPERCLIP_TOOL_ACTION_SIGNING_SECRET: "${PAPERCLIP_TOOL_ACTION_SIGNING_SECRET:?Set PAPERCLIP_TOOL_ACTION_SIGNING_SECRET in shell or .env}"
 
-      # Database: commented = embedded; set a PostgreSQL URL for an external database.
-
+      # External PostgreSQL URL (commented = embedded PostgreSQL).
       # DATABASE_URL: "${DATABASE_URL:?Set external PostgreSQL URL}"
 
-      # Disable new sign-ups after the first admin setup: true/false.
-
+      # Disable sign-ups after admin setup: true | false
       # PAPERCLIP_AUTH_DISABLE_SIGN_UP: "${PAPERCLIP_AUTH_DISABLE_SIGN_UP:-false}"
 
-      # Logs: info = normal, debug = verbose.
-
+      # trace | debug | info | warn | error | fatal | silent
       # PAPERCLIP_LOG_LEVEL: "${PAPERCLIP_LOG_LEVEL:-info}"
 
-      # Backups: true/false; interval in minutes; retention in days.
-
+      # Auto DB backup: true | false
       # PAPERCLIP_DB_BACKUP_ENABLED: "${PAPERCLIP_DB_BACKUP_ENABLED:-true}"
+
+      # Backup interval in minutes.
       # PAPERCLIP_DB_BACKUP_INTERVAL_MINUTES: "${PAPERCLIP_DB_BACKUP_INTERVAL_MINUTES:-60}"
+
+      # Backup retention in days.
       # PAPERCLIP_DB_BACKUP_RETENTION_DAYS: "${PAPERCLIP_DB_BACKUP_RETENTION_DAYS:-7}"
 
-      # Optional encryption key: 64 hex characters; reuse it when restoring data.
-
+      # Encryption master key (64 hex chars; reuse when restoring).
       # PAPERCLIP_SECRETS_MASTER_KEY: "${PAPERCLIP_SECRETS_MASTER_KEY:?Set existing encryption key}"
 
-      # Storage: local_disk or s3; S3 needs a bucket, region and AWS credentials.
-      # Custom S3: set endpoint; true enables path-style URLs.
-
+      # local_disk | s3
       # PAPERCLIP_STORAGE_PROVIDER: "${PAPERCLIP_STORAGE_PROVIDER:-local_disk}"
+
+      # S3 bucket, region, optional custom endpoint, and credentials.
       # PAPERCLIP_STORAGE_S3_BUCKET: "${PAPERCLIP_STORAGE_S3_BUCKET:-paperclip}"
       # PAPERCLIP_STORAGE_S3_REGION: "${PAPERCLIP_STORAGE_S3_REGION:-us-east-1}"
       # PAPERCLIP_STORAGE_S3_ENDPOINT: "${PAPERCLIP_STORAGE_S3_ENDPOINT:?Set S3 endpoint URL}"
-      # PAPERCLIP_STORAGE_S3_FORCE_PATH_STYLE: "${PAPERCLIP_STORAGE_S3_FORCE_PATH_STYLE:-false}"
       # AWS_ACCESS_KEY_ID: "${AWS_ACCESS_KEY_ID:-}"
       # AWS_SECRET_ACCESS_KEY: "${AWS_SECRET_ACCESS_KEY:-}"
 
-      # CLIs: codex,claude,opencode,gemini,qwen,kimi,copilot,pi,cline,amp,agy (Antigravity).
-      # Select: comma-separated names or all; none/empty = off; name@version except agy.
-      # Auto-update: 86400 = every 24h; 0 = startup only (seconds).
-      # Mode: skip = reuse/no auto-update; update = auto-update; overwrite = reinstall.
+      # Path-style S3 URLs: true | false
+      # PAPERCLIP_STORAGE_S3_FORCE_PATH_STYLE: "${PAPERCLIP_STORAGE_S3_FORCE_PATH_STYLE:-false}"
 
+      # codex,claude,opencode,gemini,qwen,kimi,copilot,pi,cline,amp,agy | all | none (name@version except agy)
       AGENT_CLIS: "${AGENT_CLIS-codex,claude,opencode,pi,kimi}"
+
+      # Update interval in seconds; 0 = startup only.
       CLI_UPDATE_INTERVAL: "${CLI_UPDATE_INTERVAL:-86400}"
+
+      # skip | update | overwrite
       CLI_INSTALL_MODE: "${CLI_INSTALL_MODE:-update}"
 
-      # Tools: go,dotnet,python,uv,rust,node,bun,deno,java; name@version; none/empty = off.
-      # Python packages: e.g. requests,ruff; Python is enabled automatically.
-      # Mode: skip = reuse; update = check; overwrite = reinstall.
-      # Checks: startup only (seconds); 0 = reuse; overwrite ignores the interval.
-
+      # go,dotnet,python,uv,rust,node,bun,deno,java | none (supports name@version)
       EXTRA_TOOLS: "${EXTRA_TOOLS-}"
+
+      # Comma-separated Python packages, e.g. requests,ruff (auto-enables python).
       PYTHON_PACKAGES: "${PYTHON_PACKAGES-}"
+
+      # skip | update | overwrite
       TOOLS_INSTALL_MODE: "${TOOLS_INSTALL_MODE:-update}"
+
+      # Startup check interval in seconds; 0 = reuse.
       TOOLS_UPDATE_INTERVAL: "${TOOLS_UPDATE_INTERVAL:-86400}"
 
-      # Optional proxy URLs reachable from the container; client support varies.
-
+      # Proxy URLs.
       # HTTP_PROXY: "${HTTP_PROXY:-}"
       # HTTPS_PROXY: "${HTTPS_PROXY:-}"
       # ALL_PROXY: "${ALL_PROXY:-}"
       # NO_PROXY: "${NO_PROXY:-localhost,127.0.0.1,::1}"
 
-      # Optional provider API keys; CLI login also works.
-
+      # Provider API keys.
       OPENAI_API_KEY: "${OPENAI_API_KEY:-}"
       ANTHROPIC_API_KEY: "${ANTHROPIC_API_KEY:-}"
       GEMINI_API_KEY: "${GEMINI_API_KEY:-}"
       GOOGLE_API_KEY: "${GOOGLE_API_KEY:-}"
 
-    # /paperclip: app data/keys/backups. Home: CLI logins/tools. Workspace: projects.
-    # Shared mounts need compatible paths/runtimes; CLI entries are shared.
-
     volumes:
+      # App data, keys, and backups.
       - paperclip-data:/paperclip
+
+      # CLI logins and tools.
       - paperclip-home:/home/node
+
+      # Project workspace.
       - ./workspace:/workspace
 
+      # Shared CLI/tool mounts across containers.
       # - /srv/shared/agent-cli:/home/node/agent-cli
       # - /srv/shared/extra-tools:/home/node/extra-tools
       # - /srv/shared/pythonlib:/home/node/pythonlib

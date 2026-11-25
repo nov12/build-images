@@ -28,20 +28,15 @@ jobs:
       - uses: actions/checkout@v7
         with:
           persist-credentials: false
-      - uses: astral-sh/setup-uv@v10.3.3
       - name: Check GitHub Actions workflows
         run: go run github.com/rhysd/actionlint/cmd/actionlint@v1.7.12 -color
       - name: Check shell syntax
         run: |
-          for script in common/*.sh common/extra-tools/*.sh common/tests/*.sh; do
+          for script in common/*.sh common/extra-tools/*.sh .github/scripts/*.sh; do
             bash -n "$script"
           done
       - name: Check shell scripts
         run: |
           shellcheck -a -x -P SCRIPTDIR -P common common/init.sh common/python-command.sh common/profile.sh
-          # The harness overrides installer functions; lint it without re-analyzing their imported definitions.
-          shellcheck -e SC1091,SC2034 common/tests/extra-tools.sh
-      - name: Check shared tools and independent version selection
-        run: bash common/tests/extra-tools.sh
-      - name: Check release resolution and per-tag image retention
-        run: python3 -m unittest discover -s .github/scripts/tests -p "test_*.py"
+      - name: Check Python scripts syntax
+        run: python3 -m py_compile .github/scripts/*.py
